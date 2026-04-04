@@ -1,0 +1,2770 @@
+use std::collections::HashSet;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
+use std::path::Path;
+use std::process::{self, ExitStatus};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use cloister_sandbox_lib::bwrap;
+use cloister_sandbox_lib::config::{SandboxConfig, StoreMode};
+use cloister_sandbox_lib::env;
+use cloister_sandbox_lib::features;
+use cloister_sandbox_lib::runtime;
+use cloister_sandbox_lib::seccomp;
+use cloister_sandbox_lib::socket;
+use cloister_sandbox_lib::ssh_filter;
+use cloister_sandbox_lib::validate;
+use cloister_sandbox_lib::wayland;
+
+/// PID of the active child process. 0 means no child is running.
+static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+
+/// Host PID that should receive graceful signals (SIGINT/SIGTERM).
+static GRACEFUL_PID: AtomicI32 = AtomicI32::new(0);
+
+/// Host PID that should receive forced teardown signals (SIGKILL).
+static FORCE_PID: AtomicI32 = AtomicI32::new(0);
+
+/// Number of rapid consecutive SIGINTs (resets after [`SIGINT_ESCALATION_WINDOW_SECS`]).
+static SIGINT_COUNT: AtomicI32 = AtomicI32::new(0);
+
+/// Monotonic timestamp (seconds) of the last SIGINT, for escalation windowing.
+static LAST_SIGINT_SEC: AtomicI64 = AtomicI64::new(0);
+
+/// Whether the sandbox is running an interactive shell (no `--new-session`).
+/// When true, the shell receives SIGINT directly from the terminal, so we
+/// must not forward the first Ctrl-C ourselves.
+static INTERACTIVE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// If consecutive Ctrl-C presses are more than this many seconds apart, the
+/// escalation counter resets and the next press is treated as a fresh first press.
+const SIGINT_ESCALATION_WINDOW_SECS: i64 = 2;
+
+/// After forwarding SIGTERM, wait this many seconds before sending SIGKILL.
+const SIGTERM_GRACE_SECS: libc::c_uint = 10;
+
+fn forwarded_signal_set() -> libc::sigset_t {
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGHUP);
+        libc::sigaddset(&mut set, libc::SIGALRM);
+    }
+    set
+}
+
+fn set_signal_mask(how: libc::c_int, set: &libc::sigset_t, old_set: Option<&mut libc::sigset_t>) {
+    unsafe {
+        libc::sigprocmask(
+            how,
+            set,
+            old_set.map_or(std::ptr::null_mut(), |mask| mask as *mut libc::sigset_t),
+        );
+    }
+}
+
+fn clear_signal_targets() {
+    CHILD_PID.store(0, Ordering::Release);
+    GRACEFUL_PID.store(0, Ordering::Release);
+    FORCE_PID.store(0, Ordering::Release);
+}
+
+fn clear_signal_targets_blocking_signals() {
+    let block_set = forwarded_signal_set();
+    let mut old_set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    set_signal_mask(libc::SIG_BLOCK, &block_set, Some(&mut old_set));
+    clear_signal_targets();
+    unsafe {
+        libc::alarm(0);
+    }
+    set_signal_mask(libc::SIG_SETMASK, &old_set, None);
+}
+
+fn graceful_signal_target(pid: libc::pid_t) -> libc::pid_t {
+    pid
+}
+
+fn force_signal_target(pid: libc::pid_t, interactive: bool) -> libc::pid_t {
+    if interactive { pid } else { -pid }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliArgs {
+    config_path: Option<String>,
+    after_netns: bool,
+    sandbox_args: Vec<String>,
+}
+
+fn set_config_path(cli: &mut CliArgs, path: String) -> Result<(), String> {
+    if cli.config_path.replace(path).is_some() {
+        return Err("cloister-sandbox: --config may only be passed once".to_string());
+    }
+    Ok(())
+}
+
+fn set_after_netns(cli: &mut CliArgs) -> Result<(), String> {
+    if cli.after_netns {
+        return Err("cloister-sandbox: --after-netns may only be passed once".to_string());
+    }
+    cli.after_netns = true;
+    Ok(())
+}
+
+fn sandbox_signal_pid_with_reader<R, N>(
+    root_pid: u32,
+    mut read_children: R,
+    mut read_nspid: N,
+) -> Result<(u32, u32), String>
+where
+    R: FnMut(u32) -> Result<Vec<u32>, String> + Copy,
+    N: FnMut(u32) -> Result<Vec<u32>, String> + Copy,
+{
+    let root_nspid = read_nspid(root_pid)?;
+    let expected_depth = root_nspid.len() + 1;
+    let sandbox_pid1 = find_descendant_pid(root_pid, read_children, |pid| {
+        let nspid = read_nspid(pid)?;
+        Ok(is_sandbox_pid1_nspid(&nspid, expected_depth))
+    })?;
+
+    let graceful_pid = read_children(sandbox_pid1)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|&pid| {
+            read_nspid(pid)
+                .map(|nspid| nspid.last() == Some(&2))
+                .unwrap_or(false)
+        })
+        .unwrap_or(sandbox_pid1);
+
+    Ok((graceful_pid, sandbox_pid1))
+}
+
+fn find_descendant_pid<F, R>(
+    root_pid: u32,
+    mut read_children: R,
+    mut predicate: F,
+) -> Result<u32, String>
+where
+    F: FnMut(u32) -> Result<bool, String>,
+    R: FnMut(u32) -> Result<Vec<u32>, String>,
+{
+    let mut pending = read_children(root_pid)?;
+    let mut visited = HashSet::new();
+
+    while let Some(pid) = pending.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+
+        if predicate(pid)? {
+            return Ok(pid);
+        }
+
+        match read_children(pid) {
+            Ok(children) => pending.extend(children),
+            Err(_) => continue,
+        }
+    }
+
+    Err(format!("failed to find matching child for pid {root_pid}"))
+}
+
+fn is_sandbox_pid1_nspid(nspid: &[u32], expected_depth: usize) -> bool {
+    nspid.len() == expected_depth && nspid.last() == Some(&1)
+}
+
+fn parse_proc_nspid(content: &str) -> Result<Vec<u32>, String> {
+    let line = content
+        .lines()
+        .find(|line| line.starts_with("NSpid:"))
+        .ok_or_else(|| "missing NSpid field".to_string())?;
+    let nspid = line
+        .strip_prefix("NSpid:")
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|e| format!("invalid NSpid value '{value}': {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if nspid.is_empty() {
+        return Err("empty NSpid field".to_string());
+    }
+
+    Ok(nspid)
+}
+
+fn read_proc_nspid(pid: u32) -> Result<Vec<u32>, String> {
+    let path = format!("/proc/{pid}/status");
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+    parse_proc_nspid(&content).map_err(|e| format!("parse {path}: {e}"))
+}
+
+fn sandbox_signal_pid(root_pid: u32) -> Result<u32, String> {
+    sandbox_signal_pid_with_reader(root_pid, read_proc_children, read_proc_nspid)
+        .map(|(pid, _)| pid)
+}
+
+fn find_signal_pids(root_pid: u32, interactive: bool) -> Result<(u32, u32), String> {
+    if interactive {
+        return Ok((root_pid, root_pid));
+    }
+
+    sandbox_signal_pid(root_pid).map(|graceful_pid| (graceful_pid, root_pid))
+}
+
+fn wait_for_signal_pids(root_pid: u32, interactive: bool) -> Result<(u32, u32), String> {
+    if interactive {
+        return Ok((root_pid, root_pid));
+    }
+
+    let poll = Duration::from_millis(FLATPAK_CHILD_PID_POLL_MS);
+    let attempts = FLATPAK_CHILD_PID_TIMEOUT_MS / FLATPAK_CHILD_PID_POLL_MS;
+    let mut last_err = None;
+
+    for _ in 0..attempts {
+        match find_signal_pids(root_pid, interactive) {
+            Ok(pids) => return Ok(pids),
+            Err(err) => last_err = Some(err),
+        }
+        thread::sleep(poll);
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        format!("timed out waiting for signal target for bubblewrap pid {root_pid}")
+    }))
+}
+
+const FLATPAK_CHILD_PID_TIMEOUT_MS: u64 = 500;
+const FLATPAK_CHILD_PID_POLL_MS: u64 = 10;
+const DBUS_PROXY_SOCKET_TIMEOUT_MS: u64 = 3_000;
+const DBUS_PROXY_SOCKET_POLL_MS: u64 = 20;
+
+struct PulseOnlyBridge {
+    child: process::Child,
+    runtime_dir: String,
+    socket_path: String,
+    anonymize_file_paths: Vec<String>,
+}
+
+struct ProcPrivacyState {
+    file_paths: Vec<String>,
+}
+
+struct FlatpakPortalState {
+    flatpak_info_path: String,
+    instance_dir: String,
+}
+
+struct DbusProxyState {
+    child: process::Child,
+    socket_path: String,
+}
+
+struct CleanupState {
+    ssh_handle: Option<ssh_filter::SshFilterHandle>,
+    dbus_proxy: Option<DbusProxyState>,
+    pulse_bridge: Option<PulseOnlyBridge>,
+    wayland_socket: Option<String>,
+    machine_id_path: Option<String>,
+    proc_privacy_state: Option<ProcPrivacyState>,
+    anonymize_file_paths: Vec<String>,
+    flatpak_portal_state: Option<FlatpakPortalState>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ImageStoreMeta {
+    version: u64,
+    mode: String,
+    #[serde(rename = "storeId")]
+    store_id: String,
+}
+
+fn anonymized_identity(config: &SandboxConfig) -> Result<&str, String> {
+    config.anonymized_identity().ok_or_else(|| {
+        "anonymized sandbox identity is missing; sandbox_home must end with a username".to_string()
+    })
+}
+
+fn pulse_proxy_identity(config: &SandboxConfig) -> Result<&str, String> {
+    anonymized_identity(config)
+}
+
+struct PulseProxyCommand<'a> {
+    runtime_dir: &'a str,
+    pipewire_remote: &'a str,
+    identity: &'a str,
+    passwd_path: Option<&'a str>,
+    group_path: Option<&'a str>,
+    pipewire_pulse_bin: &'a str,
+    pipewire_pulse_conf: &'a str,
+}
+
+fn build_pulse_only_proxy_command(
+    config: &SandboxConfig,
+    proxy: PulseProxyCommand<'_>,
+) -> Result<process::Command, String> {
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let uid_str = uid.to_string();
+    let gid_str = gid.to_string();
+    let proxy_home = format!("/home/{}", proxy.identity);
+    let store_bind_args = match config.store_mode {
+        StoreMode::Host => host_store_bind_args(),
+        StoreMode::ImageStore => {
+            image_store_bind_args(config.store_mount_path.as_deref().ok_or_else(|| {
+                "missing store_mount_path for image-store pulse proxy".to_string()
+            })?)
+        }
+    };
+
+    let mut cmd = process::Command::new(&config.bwrap_path);
+    cmd.args([
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--hostname",
+        proxy.identity,
+        "--uid",
+        &uid_str,
+        "--gid",
+        &gid_str,
+        "--clearenv",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/nix",
+        "--dir",
+        "/nix/store",
+        "--dir",
+        "/home",
+        "--dir",
+        &proxy_home,
+        "--bind",
+        proxy.runtime_dir,
+        proxy.runtime_dir,
+        "--ro-bind",
+        proxy.pipewire_remote,
+        proxy.pipewire_remote,
+        "--ro-bind",
+        proxy.pipewire_pulse_conf,
+        proxy.pipewire_pulse_conf,
+    ]);
+    cmd.args(&store_bind_args);
+
+    if let Some(path) = proxy.passwd_path {
+        cmd.args(["--ro-bind", path, "/etc/passwd"]);
+    }
+    if let Some(path) = proxy.group_path {
+        cmd.args(["--ro-bind", path, "/etc/group"]);
+    }
+
+    cmd.args([
+        "--setenv",
+        "HOME",
+        &proxy_home,
+        "--setenv",
+        "USER",
+        proxy.identity,
+        "--setenv",
+        "LOGNAME",
+        proxy.identity,
+        "--setenv",
+        "XDG_RUNTIME_DIR",
+        proxy.runtime_dir,
+        "--setenv",
+        "PULSE_RUNTIME_PATH",
+        proxy.runtime_dir,
+        "--setenv",
+        "PIPEWIRE_REMOTE",
+        proxy.pipewire_remote,
+        "--chdir",
+        "/",
+        "--",
+        proxy.pipewire_pulse_bin,
+        "-c",
+        proxy.pipewire_pulse_conf,
+    ]);
+
+    Ok(cmd)
+}
+
+fn host_store_bind_args() -> Vec<String> {
+    vec![
+        "--ro-bind".to_string(),
+        "/nix/store".to_string(),
+        "/nix/store".to_string(),
+    ]
+}
+
+fn image_store_bind_args(store_mount_path: &str) -> Vec<String> {
+    let store_path = format!("{store_mount_path}/nix/store");
+    vec![
+        "--ro-bind".to_string(),
+        store_path,
+        "/nix/store".to_string(),
+    ]
+}
+
+fn mount_flags_indicate_read_only(flags: libc::c_ulong) -> bool {
+    flags & libc::ST_RDONLY == libc::ST_RDONLY
+}
+
+fn mount_is_read_only(path: &Path) -> Result<bool, String> {
+    let path_bytes = path.as_os_str().as_bytes();
+    let path_cstr = std::ffi::CString::new(path_bytes)
+        .map_err(|_| format!("mount path '{}' contains interior NUL byte", path.display()))?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(path_cstr.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return Err(format!(
+            "failed to statvfs '{}' for mount flags: {}",
+            path.display(),
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(mount_flags_indicate_read_only(stat.f_flag))
+}
+
+fn validate_image_store_meta(
+    meta: &ImageStoreMeta,
+    meta_path: &Path,
+    expected_store_id: &str,
+    prefix: &str,
+) -> Result<(), String> {
+    if meta.version != 1 {
+        return Err(format!(
+            "{prefix}: image-store metadata '{}' has unsupported version {}",
+            meta_path.display(),
+            meta.version
+        ));
+    }
+    if meta.mode != "image-store" {
+        return Err(format!(
+            "{prefix}: image-store metadata '{}' has unexpected mode '{}'",
+            meta_path.display(),
+            meta.mode
+        ));
+    }
+    if meta.store_id != expected_store_id {
+        return Err(format!(
+            "{prefix}: image-store metadata '{}' has store ID '{}' but expected '{}'",
+            meta_path.display(),
+            meta.store_id,
+            expected_store_id
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_image_store_mounted(config: &SandboxConfig, prefix: &str) -> Result<String, String> {
+    let store_id = config
+        .store_id
+        .as_deref()
+        .ok_or_else(|| format!("{prefix}: missing store_id for image-store mode"))?;
+    let store_mount_path = config
+        .store_mount_path
+        .as_deref()
+        .ok_or_else(|| format!("{prefix}: missing store_mount_path for image-store mode"))?;
+    let store_image_path = config
+        .store_image_path
+        .as_deref()
+        .ok_or_else(|| format!("{prefix}: missing store_image_path for image-store mode"))?;
+
+    let mount_path = Path::new(store_mount_path);
+    if !mount_path.is_dir() {
+        return Err(format!(
+            "{prefix}: image-store mount '{}' is missing; ensure the cloister-image-store NixOS module is enabled and system mounts are active for store '{}' ({})",
+            store_mount_path, store_id, store_image_path
+        ));
+    }
+
+    let store_base = mount_path.join("nix/store");
+    if !store_base.is_dir() {
+        return Err(format!(
+            "{prefix}: image-store mount '{}' does not contain /nix/store",
+            store_mount_path
+        ));
+    }
+
+    if !is_mountpoint(mount_path)? {
+        return Err(format!(
+            "{prefix}: image-store mount '{}' is not an active mountpoint",
+            store_mount_path
+        ));
+    }
+    if !mount_is_read_only(mount_path)? {
+        return Err(format!(
+            "{prefix}: image-store mount '{}' is writable; expected a read-only squashfs mount for store '{}' ({})",
+            store_mount_path, store_id, store_image_path
+        ));
+    }
+
+    let meta_path = mount_path.join("meta.json");
+    let meta = read_image_store_meta(&meta_path, prefix)?;
+    validate_image_store_meta(&meta, &meta_path, store_id, prefix)?;
+
+    Ok(store_mount_path.to_string())
+}
+
+fn is_mountpoint(path: &Path) -> Result<bool, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|e| format!("failed to stat '{}': {e}", path.display()))?;
+    let Some(parent) = path.parent() else {
+        return Ok(true);
+    };
+    let parent_metadata = std::fs::metadata(parent)
+        .map_err(|e| format!("failed to stat parent '{}': {e}", parent.display()))?;
+
+    Ok(metadata.dev() != parent_metadata.dev() || metadata.ino() == parent_metadata.ino())
+}
+
+fn read_image_store_meta(path: &Path, prefix: &str) -> Result<ImageStoreMeta, String> {
+    let data = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "{prefix}: image-store metadata '{}' is unreadable: {e}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&data).map_err(|e| {
+        format!(
+            "{prefix}: image-store metadata '{}' is invalid JSON: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Write to stderr from a signal handler (async-signal-safe).
+fn signal_write_stderr(msg: &[u8]) {
+    unsafe {
+        libc::write(
+            libc::STDERR_FILENO,
+            msg.as_ptr() as *const libc::c_void,
+            msg.len(),
+        );
+    }
+}
+
+/// Get the current monotonic time in seconds (async-signal-safe).
+fn monotonic_seconds() -> i64 {
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    ts.tv_sec
+}
+
+/// Signal handler that forwards signals to the child process with escalation.
+///
+/// - **SIGINT (non-interactive)**: Rapid consecutive presses escalate:
+///   SIGINT → SIGTERM → SIGKILL. Presses spaced more than
+///   [`SIGINT_ESCALATION_WINDOW_SECS`] apart reset the counter, so normal
+///   interactive Ctrl-C usage (e.g. cancelling a shell command) is unaffected.
+/// - **SIGINT (interactive)**: The first press is **not forwarded** because the
+///   shell already receives SIGINT directly from the terminal (no `--new-session`).
+///   The 2nd and 3rd rapid presses still escalate to SIGTERM / SIGKILL.
+/// - **SIGTERM**: Forwarded to the child; a [`SIGTERM_GRACE_SECS`] alarm is set to
+///   send SIGKILL if the child hasn't exited by then.
+/// - **SIGALRM**: Sends SIGKILL to the child (grace period expired).
+/// - **SIGHUP**: Forwarded directly.
+///
+/// Only uses async-signal-safe operations (atomics, `kill`, `write`, `clock_gettime`, `alarm`).
+extern "C" fn forward_signal(sig: libc::c_int) {
+    let graceful_pid = GRACEFUL_PID.load(Ordering::Acquire);
+    let force_pid = FORCE_PID
+        .load(Ordering::Acquire)
+        .max(CHILD_PID.load(Ordering::Acquire));
+    if graceful_pid <= 0 && force_pid <= 0 {
+        return;
+    }
+
+    let interactive = INTERACTIVE_MODE.load(Ordering::Acquire);
+    let graceful_target = if graceful_pid > 0 {
+        graceful_signal_target(graceful_pid)
+    } else {
+        0
+    };
+    let force_target = if force_pid > 0 {
+        force_signal_target(force_pid, interactive)
+    } else {
+        0
+    };
+
+    match sig {
+        libc::SIGINT => {
+            let now = monotonic_seconds();
+            let last = LAST_SIGINT_SEC.swap(now, Ordering::AcqRel);
+            let count = if last == 0 || (now - last) > SIGINT_ESCALATION_WINDOW_SECS {
+                SIGINT_COUNT.store(1, Ordering::Release);
+                1
+            } else {
+                SIGINT_COUNT.fetch_add(1, Ordering::AcqRel) + 1
+            };
+
+            match count {
+                1 => {
+                    if !interactive && graceful_target != 0 {
+                        unsafe {
+                            libc::kill(graceful_target, libc::SIGINT);
+                        }
+                    }
+                    // In interactive mode the shell gets SIGINT from the terminal directly.
+                }
+                2 => {
+                    signal_write_stderr(
+                        b"\ncloister-sandbox: requesting sandbox shutdown (Ctrl-C again to force)...\n",
+                    );
+                    if graceful_target != 0 {
+                        unsafe {
+                            libc::kill(graceful_target, libc::SIGTERM);
+                        }
+                    }
+                }
+                _ => {
+                    signal_write_stderr(b"\ncloister-sandbox: force-killing sandbox.\n");
+                    if force_target != 0 {
+                        unsafe {
+                            libc::kill(force_target, libc::SIGKILL);
+                        }
+                    }
+                }
+            }
+        }
+        libc::SIGTERM => unsafe {
+            if graceful_target != 0 {
+                libc::kill(graceful_target, libc::SIGTERM);
+            }
+            libc::alarm(SIGTERM_GRACE_SECS);
+        },
+        libc::SIGALRM => {
+            signal_write_stderr(
+                b"cloister-sandbox: graceful shutdown timed out, force-killing sandbox.\n",
+            );
+            if force_target != 0 {
+                unsafe {
+                    libc::kill(force_target, libc::SIGKILL);
+                }
+            }
+        }
+        _ => unsafe {
+            if graceful_target != 0 {
+                libc::kill(graceful_target, sig);
+            }
+        },
+    }
+}
+
+/// Install signal handlers for SIGTERM, SIGINT, SIGHUP, and SIGALRM.
+fn install_signal_handlers() {
+    for &sig in &[libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGALRM] {
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = forward_signal as *const () as usize;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+}
+
+/// Spawn a child process and wait for it, storing its PID so signal handlers
+/// can forward signals to it.
+///
+/// When `interactive` is true, a `pre_exec` hook is installed that:
+/// 1. Sets SIGINT to `SIG_IGN` so the bwrap outer process ignores Ctrl-C
+///    (the shell inside handles it via the terminal).
+/// 2. Resets the signal mask to empty so the child starts with clean signals.
+///
+/// Blocks SIGTERM/SIGINT/SIGHUP/SIGALRM around the spawn→store window to
+/// prevent signals from being dropped when CHILD_PID is still 0.
+fn spawn_and_wait(
+    cmd: &mut process::Command,
+    interactive: bool,
+    flatpak_state: Option<&FlatpakPortalState>,
+) -> io::Result<ExitStatus> {
+    // Reset escalation state for new child
+    SIGINT_COUNT.store(0, Ordering::Release);
+    LAST_SIGINT_SEC.store(0, Ordering::Release);
+
+    // Block forwarded signals before spawn so none are lost in the race window
+    let mut old_set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let block_set = forwarded_signal_set();
+    set_signal_mask(libc::SIG_BLOCK, &block_set, Some(&mut old_set));
+
+    // Safety: only calls async-signal-safe functions (signal, sigemptyset,
+    // sigprocmask). Runs between fork and exec in the child process.
+    unsafe {
+        cmd.pre_exec(move || {
+            if interactive {
+                // Ignore SIGINT in bwrap's outer process so Ctrl-C doesn't kill it.
+                libc::signal(libc::SIGINT, libc::SIG_IGN);
+            }
+
+            // Reset signal mask so the child starts with no blocked signals.
+            let mut empty_set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut empty_set);
+            libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
+
+            Ok(())
+        });
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // Restore signal mask before returning error
+            unsafe {
+                libc::sigprocmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+            }
+            return Err(e);
+        }
+    };
+    CHILD_PID.store(child.id() as i32, Ordering::Release);
+    let (graceful_pid, force_pid) =
+        wait_for_signal_pids(child.id(), interactive).unwrap_or((child.id(), child.id()));
+    GRACEFUL_PID.store(graceful_pid as i32, Ordering::Release);
+    FORCE_PID.store(force_pid as i32, Ordering::Release);
+
+    if let Some(state) = flatpak_state {
+        let bwrapinfo_path = format!("{}/bwrapinfo.json", state.instance_dir);
+        let setup_result = (|| {
+            let sandbox_pid = wait_for_flatpak_sandbox_pid(child.id())?;
+            runtime::write_flatpak_bwrapinfo(&bwrapinfo_path, sandbox_pid)
+        })();
+        if let Err(err) = setup_result {
+            let _ = child.kill();
+            let _ = child.wait();
+            clear_signal_targets();
+            unsafe { libc::alarm(0) };
+            set_signal_mask(libc::SIG_SETMASK, &old_set, None);
+            return Err(io::Error::other(err));
+        }
+    }
+
+    // Restore old signal mask — any pending signals are delivered now
+    set_signal_mask(libc::SIG_SETMASK, &old_set, None);
+
+    let status = child.wait();
+    // Block the forwarded signals while clearing stale targets so a late
+    // delivery cannot hit a recycled PID or process group.
+    clear_signal_targets_blocking_signals();
+    status
+}
+
+fn parse_proc_children(content: &str) -> Vec<u32> {
+    content
+        .split_ascii_whitespace()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect()
+}
+
+fn read_proc_children(pid: u32) -> Result<Vec<u32>, String> {
+    let path = format!("/proc/{pid}/task/{pid}/children");
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+    Ok(parse_proc_children(&content))
+}
+
+fn has_flatpak_info(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}/root/.flatpak-info")).exists()
+}
+
+fn find_flatpak_sandbox_pid(root_pid: u32) -> Result<u32, String> {
+    find_descendant_pid(root_pid, read_proc_children, |pid| {
+        Ok(has_flatpak_info(pid))
+    })
+    .map_err(|e| format!("discover sandbox child for bubblewrap pid {root_pid}: {e}"))
+}
+
+fn wait_for_flatpak_sandbox_pid(root_pid: u32) -> Result<u32, String> {
+    let poll = Duration::from_millis(FLATPAK_CHILD_PID_POLL_MS);
+    let attempts = FLATPAK_CHILD_PID_TIMEOUT_MS / FLATPAK_CHILD_PID_POLL_MS;
+    let mut last_err = None;
+
+    for _ in 0..attempts {
+        if has_flatpak_info(root_pid) {
+            return Ok(root_pid);
+        }
+        match find_flatpak_sandbox_pid(root_pid) {
+            Ok(pid) => return Ok(pid),
+            Err(err) => last_err = Some(err),
+        }
+        thread::sleep(poll);
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        format!("timed out waiting for sandbox child for bubblewrap pid {root_pid}")
+    }))
+}
+
+fn wait_for_dbus_proxy_socket(path: &str, child: &mut process::Child) -> Result<(), String> {
+    let poll = Duration::from_millis(DBUS_PROXY_SOCKET_POLL_MS);
+    let attempts = DBUS_PROXY_SOCKET_TIMEOUT_MS / DBUS_PROXY_SOCKET_POLL_MS;
+
+    for _ in 0..attempts {
+        if socket::validate_existing_socket(path).is_ok() {
+            return Ok(());
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "dbus proxy exited before socket became ready: {}",
+                    status
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(format!("check dbus proxy status: {e}")),
+        }
+
+        thread::sleep(poll);
+    }
+
+    socket::validate_existing_socket(path)
+        .map(|_| ())
+        .map_err(|e| format!("dbus proxy socket not ready at {path}: {e}"))
+}
+
+fn start_pulse_only_bridge(
+    config: &SandboxConfig,
+    xdg_runtime_dir: &str,
+    prefix: &str,
+) -> Result<Option<PulseOnlyBridge>, String> {
+    let (Some(backend_socket_name), Some(pipewire_pulse_bin), Some(pipewire_pulse_conf)) = (
+        &config.pipewire_backend_socket_name,
+        &config.pipewire_pulse_binary_path,
+        &config.pipewire_pulse_config_path,
+    ) else {
+        return Ok(None);
+    };
+
+    let runtime_dir = format!(
+        "{xdg_runtime_dir}/cloister/pulse/{}-{}",
+        config.name,
+        process::id()
+    );
+    let socket_path = format!("{runtime_dir}/native");
+    let pipewire_remote = format!("{xdg_runtime_dir}/{backend_socket_name}");
+
+    if let Err(e) = socket::validate_existing_socket(&pipewire_remote) {
+        return Err(format!(
+            "{prefix}: pulse-only backend socket '{pipewire_remote}': {e}"
+        ));
+    }
+
+    std::fs::create_dir_all(&runtime_dir)
+        .map_err(|e| format!("{prefix}: pulse-only runtime dir '{runtime_dir}': {e}"))?;
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+        |e| format!("{prefix}: pulse-only runtime dir permissions '{runtime_dir}': {e}"),
+    )?;
+    socket::validate_socket_parent(&socket_path)
+        .map_err(|e| format!("{prefix}: pulse-only socket path '{socket_path}': {e}"))?;
+    socket::remove_stale_socket(&socket_path)
+        .map_err(|e| format!("{prefix}: pulse-only socket cleanup '{socket_path}': {e}"))?;
+
+    let identity = pulse_proxy_identity(config)?;
+    let (anonymize_file_paths, mut child) = if config.anonymize {
+        let proxy_home = format!("/home/{identity}");
+        let overlays = features::anonymize_identity_args(
+            identity,
+            &config.shell_bin,
+            &proxy_home,
+            config.network_namespace.as_deref(),
+        );
+
+        let passwd_path = overlays.file_paths.first().map(String::as_str);
+        let group_path = overlays.file_paths.get(1).map(String::as_str);
+
+        let mut cmd = build_pulse_only_proxy_command(
+            config,
+            PulseProxyCommand {
+                runtime_dir: &runtime_dir,
+                pipewire_remote: &pipewire_remote,
+                identity,
+                passwd_path,
+                group_path,
+                pipewire_pulse_bin,
+                pipewire_pulse_conf,
+            },
+        )?;
+
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("{prefix}: start anonymized pulse-only proxy: {e}"))?;
+        (overlays.file_paths, child)
+    } else {
+        let child = process::Command::new(pipewire_pulse_bin)
+            .arg("-c")
+            .arg(pipewire_pulse_conf)
+            .env("PIPEWIRE_REMOTE", &pipewire_remote)
+            .env("PULSE_RUNTIME_PATH", &runtime_dir)
+            .spawn()
+            .map_err(|e| format!("{prefix}: start pulse-only pipewire-pulse: {e}"))?;
+        (Vec::new(), child)
+    };
+
+    for _ in 0..50 {
+        if Path::new(&socket_path)
+            .metadata()
+            .map(|meta| meta.file_type().is_socket())
+            .unwrap_or(false)
+        {
+            if let Err(e) = socket::validate_existing_socket(&socket_path) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = socket::remove_stale_socket(&socket_path);
+                for path in &anonymize_file_paths {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(format!(
+                    "{prefix}: pulse-only bridge produced invalid socket '{socket_path}': {e}"
+                ));
+            }
+            return Ok(Some(PulseOnlyBridge {
+                child,
+                runtime_dir,
+                socket_path,
+                anonymize_file_paths,
+            }));
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("{prefix}: poll pulse-only pipewire-pulse: {e}"))?
+        {
+            for path in &anonymize_file_paths {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = socket::remove_stale_socket(&socket_path);
+            return Err(format!(
+                "{prefix}: pulse-only pipewire-pulse exited before creating {socket_path} (status: {status})"
+            ));
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = socket::remove_stale_socket(&socket_path);
+    for path in &anonymize_file_paths {
+        let _ = std::fs::remove_file(path);
+    }
+    Err(format!(
+        "{prefix}: timed out waiting for pulse-only socket {socket_path}"
+    ))
+}
+
+fn main() {
+    let exit_code = run();
+    process::exit(exit_code);
+}
+
+fn err_prefix(name: &str) -> String {
+    format!("cloister-sandbox[{name}]")
+}
+
+fn prepare_run_cmd(
+    config: &SandboxConfig,
+    sandbox_args: &[String],
+) -> Result<(Vec<String>, bool), &'static str> {
+    let parsed_args = env::parse_sandbox_args(sandbox_args)?;
+    let run_cmd = env::build_run_cmd(
+        &config.shell_bin,
+        &config.shell_interactive_args,
+        config.default_command.as_deref(),
+        &parsed_args,
+    );
+    let is_interactive = env::is_interactive(&parsed_args, config.default_command.as_deref());
+
+    Ok((run_cmd, is_interactive))
+}
+
+fn run() -> i32 {
+    // --- 1. Parse CLI args ---
+    let args: Vec<String> = std::env::args().collect();
+    let cli = parse_cli_args(&args).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(2);
+    });
+
+    if matches!(cli.sandbox_args.as_slice(), [arg] if arg == "--version" || arg == "--build-info")
+        || (cli.config_path.is_none()
+            && matches!(
+                args.get(1).map(String::as_str),
+                Some("--version") | Some("--build-info")
+            ))
+    {
+        print_build_info(cli.config_path.as_deref());
+        return 0;
+    }
+
+    let config_path = cli.config_path.unwrap_or_else(|| {
+        eprintln!("cloister-sandbox: --config <path> is required");
+        process::exit(2);
+    });
+
+    // --- 2. Load config ---
+    let config = SandboxConfig::load(&config_path).unwrap_or_else(|e| {
+        eprintln!("cloister-sandbox: {e}");
+        process::exit(1);
+    });
+
+    let prefix = err_prefix(&config.name);
+
+    if let Err(e) = config.validate() {
+        eprintln!("{prefix}: {e}");
+        process::exit(1);
+    }
+
+    let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    if let Err(e) = validate_xdg_runtime_dir(&config, &xdg_runtime_dir) {
+        eprintln!("{prefix}: {e}");
+        process::exit(1);
+    }
+    // --- 2b. Install signal handlers so SIGTERM/SIGINT/SIGHUP forward to children ---
+    install_signal_handlers();
+
+    // --- 3. Netns re-exec ---
+    if let Some(ref netns_helper) = config.netns_helper_path {
+        if let (Some(ns), false) = (&config.network_namespace, cli.after_netns) {
+            // Re-exec through netns helper: netns_helper --netns <name> -- <self> --after-netns --config <path> [original args]
+            let self_exe = std::env::current_exe().unwrap_or_else(|e| {
+                eprintln!("{prefix}: cannot determine self path: {e}");
+                process::exit(1);
+            });
+
+            let mut cmd = process::Command::new(netns_helper);
+            cmd.args(["--netns", ns, "--"]);
+            cmd.arg(&self_exe);
+            cmd.arg("--after-netns");
+            cmd.args(["--config", &config_path]);
+            cmd.args(&cli.sandbox_args);
+
+            let status = spawn_and_wait(&mut cmd, false, None).unwrap_or_else(|e| {
+                eprintln!("{prefix}: exec netns helper: {e}");
+                process::exit(127);
+            });
+
+            return status
+                .code()
+                .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+        }
+    }
+
+    // --- 4-7. Sandbox directory, validation, start dir, per-dir setup ---
+    let configured_home = config.home_directory.clone();
+    let configured_home_resolved = std::fs::canonicalize(&configured_home)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| configured_home.clone());
+
+    let (sandbox_dir, sandbox_dest, dir_hash, effective_start_dir) = if config
+        .bind_working_directory
+    {
+        // --- 4. Determine sandbox directory ---
+        let sandbox_dir = runtime::detect_sandbox_dir(&config.git_path).unwrap_or_else(|e| {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        });
+
+        // --- 5. Validate sandbox directory ---
+        if config.enforce_strict_home_policy {
+            if let Err(e) =
+                validate::validate_strict_home_policy(&sandbox_dir, &configured_home_resolved)
+            {
+                eprintln!("{prefix}: {e}");
+                process::exit(1);
+            }
+        }
+
+        if let Err(e) = validate::validate_disallowed_paths(&sandbox_dir, &config.disallowed_paths)
+        {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+
+        if let Err(e) = validate::validate_sandbox_dir_exists(&sandbox_dir) {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+
+        // --- 6. Compute start dir and anonymization ---
+        let start_dir = runtime::compute_start_dir(&sandbox_dir);
+        let sandbox_dest = if config.anonymize {
+            runtime::remap_path_for_anonymize(&sandbox_dir, &configured_home, &config.sandbox_home)
+        } else {
+            sandbox_dir.clone()
+        };
+        let effective_start_dir = if config.anonymize {
+            runtime::remap_path_for_anonymize(&start_dir, &configured_home, &config.sandbox_home)
+        } else {
+            start_dir
+        };
+
+        // --- 7. Per-dir setup ---
+        let dir_hash = if !config.per_dir.is_empty() {
+            let hash = runtime::compute_dir_hash(&sandbox_dir);
+
+            for (base, paths) in &config.per_dir {
+                if let Err(e) = runtime::validate_per_dir_base(base) {
+                    eprintln!("{prefix}: {e}");
+                    process::exit(1);
+                }
+
+                let per_dir_mkdirs: Vec<String> = paths
+                    .iter()
+                    .map(|p| format!("{}/{}/{}", base, hash, p))
+                    .collect();
+                if let Err(e) = runtime::ensure_dirs(&per_dir_mkdirs) {
+                    eprintln!("{prefix}: {e}");
+                    process::exit(1);
+                }
+
+                let manifest_path = format!("{}/manifest.json", base);
+                if let Err(e) = runtime::update_manifest(&manifest_path, &hash, &sandbox_dir) {
+                    eprintln!("{prefix}: {e}");
+                    process::exit(1);
+                }
+            }
+
+            hash
+        } else {
+            String::new()
+        };
+
+        (sandbox_dir, sandbox_dest, dir_hash, effective_start_dir)
+    } else {
+        // No working directory needed
+        (
+            String::new(),
+            String::new(),
+            String::new(),
+            config.sandbox_home.clone(),
+        )
+    };
+
+    // --- 8. Volume-backed dir/file creation, copy-on-first-use files ---
+    let dir_paths: Vec<String> = config.dir_mkdirs.iter().map(|s| s.path.clone()).collect();
+    if let Err(e) = runtime::ensure_dirs(&dir_paths) {
+        eprintln!("{prefix}: {e}");
+        process::exit(1);
+    }
+
+    // Host-side dirs for managed files inside dir-backed mounts
+    if let Err(e) = runtime::ensure_dirs(&config.managed_file_host_mkdirs) {
+        eprintln!("{prefix}: {e}");
+        process::exit(1);
+    }
+
+    let file_paths: Vec<String> = config.file_mkdirs.iter().map(|s| s.path.clone()).collect();
+    if let Err(e) = runtime::ensure_files(&file_paths) {
+        eprintln!("{prefix}: {e}");
+        process::exit(1);
+    }
+
+    // Copy files into writable sandbox state. Missing sources are fatal.
+    for cf in &config.copy_files {
+        let mode = match u32::from_str_radix(&cf.mode, 8) {
+            Ok(m) if m <= 0o777 => m,
+            _ => {
+                eprintln!(
+                    "{prefix}: invalid mode '{}' for copy_file '{}'",
+                    cf.mode, cf.host_dest
+                );
+                process::exit(1);
+            }
+        };
+        if let Err(e) = runtime::copy_file(
+            &cf.src,
+            &cf.host_dest,
+            mode,
+            cf.overwrite,
+            &config.copy_file_base,
+        ) {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+    }
+
+    // --- 9. Build bwrap args ---
+    let mut runtime_vars = runtime::build_runtime_vars(
+        &configured_home,
+        &config.sandbox_home,
+        &sandbox_dir,
+        &sandbox_dest,
+        &dir_hash,
+        &xdg_runtime_dir,
+    );
+
+    let launch_instance_id = if config.dbus_enable || config.flatpak_app_id.is_some() {
+        Some(runtime::generate_flatpak_instance_id())
+    } else {
+        None
+    };
+
+    if let (Some(socket_name), Some(instance_id)) = (
+        config.dbus_proxy_socket_name.as_deref(),
+        launch_instance_id.as_deref(),
+    ) {
+        runtime_vars.insert(
+            "DBUS_PROXY_SOCKET".to_string(),
+            features::dbus_runtime_socket_path(&xdg_runtime_dir, socket_name, instance_id),
+        );
+    }
+
+    let flatpak_portal_state = if let Some(app_id) = config.flatpak_app_id.as_deref() {
+        let instance_id = launch_instance_id
+            .clone()
+            .expect("launch instance id must exist when portal integration is enabled");
+        let flatpak_info_path =
+            format!("{xdg_runtime_dir}/cloister/flatpak-info/{instance_id}.ini");
+        let instance_dir = format!("{xdg_runtime_dir}/.flatpak/{instance_id}");
+
+        if let Err(e) = runtime::write_flatpak_info(&flatpak_info_path, app_id, &instance_id) {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+        if let Err(e) = runtime::ensure_dirs(std::slice::from_ref(&instance_dir)) {
+            eprintln!("{prefix}: {e}");
+            let _ = runtime::remove_path_if_exists(&flatpak_info_path);
+            process::exit(1);
+        }
+
+        runtime_vars.insert("FLATPAK_INFO_PATH".to_string(), flatpak_info_path.clone());
+
+        Some(FlatpakPortalState {
+            flatpak_info_path,
+            instance_dir,
+        })
+    } else {
+        None
+    };
+
+    if config.dangerous_path_warnings {
+        if let Err(e) = validate::validate_dangerous_binds(
+            &config.bind_sources,
+            &runtime_vars,
+            &configured_home_resolved,
+            &config.dangerous_paths,
+            &config.allow_dangerous_paths,
+        ) {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+    }
+
+    let image_store_mount_path = if config.store_mode == StoreMode::ImageStore {
+        match ensure_image_store_mounted(&config, &prefix) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                eprintln!("{e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    let pulse_bridge = match start_pulse_only_bridge(&config, &xdg_runtime_dir, &prefix) {
+        Ok(bridge) => bridge,
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+    };
+
+    let mut extra_args = Vec::new();
+
+    match config.store_mode {
+        StoreMode::Host => extra_args.extend(host_store_bind_args()),
+        StoreMode::ImageStore => {
+            if let Some(store_mount_path) = image_store_mount_path.as_deref() {
+                extra_args.extend(image_store_bind_args(store_mount_path));
+            }
+        }
+    }
+
+    // Passthrough env
+    extra_args.extend(bwrap::passthrough_env_args(&config.passthrough_env));
+
+    // ZDOTDIR (only forward host ZDOTDIR when host shell config is enabled)
+    if config.shell_name == "zsh" && config.shell_host_config {
+        extra_args.extend(bwrap::zdotdir_args(&configured_home, &config.sandbox_home));
+    }
+
+    // SSH
+    let ssh_filter_handle;
+    if config.ssh_filter_enabled() {
+        if let Ok(auth_sock) = std::env::var("SSH_AUTH_SOCK") {
+            if !auth_sock.is_empty() {
+                match socket::validate_existing_socket(&auth_sock) {
+                    Err(e) => {
+                        eprintln!("{prefix}: invalid SSH_AUTH_SOCK '{auth_sock}': {e}");
+                        ssh_filter_handle = None;
+                    }
+                    Ok(()) => {
+                        let filter_socket =
+                            format!("{xdg_runtime_dir}/cloister-ssh-filter-{}", process::id());
+                        match ssh_filter::start_listener(
+                            &filter_socket,
+                            &auth_sock,
+                            config.ssh_allow_fingerprints.clone(),
+                            config.ssh_filter_timeout_seconds,
+                        ) {
+                            Ok(handle) => {
+                                extra_args.extend([
+                                    "--bind".to_string(),
+                                    filter_socket.clone(),
+                                    filter_socket.clone(),
+                                    "--setenv".to_string(),
+                                    "SSH_AUTH_SOCK".to_string(),
+                                    filter_socket,
+                                ]);
+                                ssh_filter_handle = Some(handle);
+                            }
+                            Err(e) => {
+                                eprintln!("{prefix}: ssh filter setup failed: {e}");
+                                ssh_filter_handle = None;
+                            }
+                        }
+                    }
+                }
+            } else {
+                ssh_filter_handle = None;
+            }
+        } else {
+            ssh_filter_handle = None;
+        }
+    } else if config.ssh_enable {
+        if let Ok(auth_sock) = std::env::var("SSH_AUTH_SOCK") {
+            if !auth_sock.is_empty() {
+                if let Err(e) = socket::validate_existing_socket(&auth_sock) {
+                    eprintln!("{prefix}: invalid SSH_AUTH_SOCK '{auth_sock}': {e}");
+                } else {
+                    extra_args.extend([
+                        "--bind".to_string(),
+                        auth_sock.clone(),
+                        auth_sock.clone(),
+                        "--setenv".to_string(),
+                        "SSH_AUTH_SOCK".to_string(),
+                        auth_sock,
+                    ]);
+                }
+            }
+        }
+        ssh_filter_handle = None;
+    } else {
+        ssh_filter_handle = None;
+    }
+
+    // PulseAudio
+    if let Some(socket_name) = &config.pulseaudio_socket_name {
+        extra_args.extend(features::pulseaudio_args(&xdg_runtime_dir, socket_name));
+    } else if let Some(bridge) = &pulse_bridge {
+        let sandbox_socket = format!("{xdg_runtime_dir}/pulse/native");
+        extra_args.extend(features::pulseaudio_args_with_source(
+            &bridge.socket_path,
+            &sandbox_socket,
+        ));
+    }
+
+    // PipeWire
+    if let Some(socket_name) = &config.pipewire_socket_name {
+        extra_args.extend(features::pipewire_args(&xdg_runtime_dir, socket_name));
+    }
+
+    // Wayland
+    let _wayland_keep_alive;
+    let wayland_socket_path;
+    if config.wayland_enable {
+        if std::env::var("WAYLAND_DISPLAY")
+            .map(|d| !d.is_empty())
+            .unwrap_or(false)
+        {
+            if config.wayland_security_context {
+                let wayland_dir = format!("{xdg_runtime_dir}/cloister/wayland");
+                if let Err(e) = std::fs::create_dir_all(&wayland_dir) {
+                    eprintln!("{prefix}: wayland runtime dir: {e}");
+                    process::exit(1);
+                }
+                let socket = format!("{wayland_dir}/{}", process::id());
+                if !wayland::probe() {
+                    eprintln!("{prefix}: compositor does not support wp-security-context-v1.");
+                    eprintln!(
+                        "Either use a supported compositor (sway 1.9+, Hyprland, niri, labwc 0.8.2+)"
+                    );
+                    eprintln!(
+                        "or set gui.wayland.securityContext.enable = false for raw socket passthrough."
+                    );
+                    process::exit(1);
+                }
+                let app_id = format!("cloister-{}", config.name);
+                match wayland::setup_context(&socket, "cloister", &app_id) {
+                    Ok(fd) => {
+                        extra_args.extend([
+                            "--ro-bind".to_string(),
+                            socket.clone(),
+                            format!("{xdg_runtime_dir}/wayland-1"),
+                            "--setenv".to_string(),
+                            "WAYLAND_DISPLAY".to_string(),
+                            "wayland-1".to_string(),
+                        ]);
+                        _wayland_keep_alive = Some(fd);
+                        wayland_socket_path = Some(socket);
+                    }
+                    Err(e) => {
+                        eprintln!("{prefix}: wayland setup: {e}");
+                        process::exit(1);
+                    }
+                }
+            } else {
+                extra_args.extend(features::wayland_raw_args(&xdg_runtime_dir));
+                _wayland_keep_alive = None;
+                wayland_socket_path = None;
+            }
+            // Electron/Chromium apps need this to use native Wayland via Ozone
+            extra_args.extend([
+                "--setenv".to_string(),
+                "NIXOS_OZONE_WL".to_string(),
+                "1".to_string(),
+            ]);
+        } else {
+            _wayland_keep_alive = None;
+            wayland_socket_path = None;
+        }
+    } else {
+        _wayland_keep_alive = None;
+        wayland_socket_path = None;
+    }
+
+    // X11
+    if config.x11_enable {
+        extra_args.extend(features::x11_args(&config.sandbox_home));
+    }
+
+    // GPU
+    if config.gpu_enable {
+        extra_args.extend(features::gpu_args(config.gpu_shm));
+    }
+
+    // FIDO2
+    if config.fido2_enable {
+        extra_args.extend(features::fido2_args());
+    }
+
+    // Video/Camera
+    if config.video_enable {
+        extra_args.extend(features::video_args());
+    }
+
+    // Printing
+    if config.printing_enable {
+        extra_args.extend(features::printing_args());
+    }
+
+    // Device binds
+    extra_args.extend(features::dev_bind_args(&config.dev_binds));
+
+    // Anonymized identity (synthetic /etc/passwd + /etc/group with real UID/GID)
+    let anonymize_file_paths = if config.anonymize {
+        let identity = match anonymized_identity(&config) {
+            Ok(identity) => identity,
+            Err(e) => {
+                eprintln!("{prefix}: {e}");
+                process::exit(1);
+            }
+        };
+        let overlays = features::anonymize_identity_args(
+            identity,
+            &config.shell_bin,
+            &config.sandbox_home,
+            config.network_namespace.as_deref(),
+        );
+        extra_args.extend(overlays.args);
+        overlays.file_paths
+    } else {
+        Vec::new()
+    };
+
+    // Machine ID (random per invocation — avoids host fingerprinting)
+    let (machine_id_bwrap_args, machine_id_path) = features::machine_id_args();
+    extra_args.extend(machine_id_bwrap_args);
+
+    let proc_privacy_state = if config.anonymize {
+        let overlays = features::proc_privacy_args();
+        extra_args.extend(overlays.args.clone());
+        Some(ProcPrivacyState {
+            file_paths: overlays.file_paths,
+        })
+    } else {
+        None
+    };
+
+    // Seccomp
+    let _seccomp_file; // Keep alive until bwrap finishes
+    if let Some(ref filter_path) = config.seccomp_filter_path {
+        if config.seccomp_enable {
+            match seccomp::open_seccomp_fd(filter_path) {
+                Ok((file, fd)) => {
+                    extra_args.extend(seccomp::seccomp_args(fd));
+                    _seccomp_file = Some(file);
+                }
+                Err(e) => {
+                    eprintln!("{prefix}: seccomp filter open: {e}");
+                    process::exit(1);
+                }
+            }
+        } else {
+            _seccomp_file = None;
+        }
+    } else {
+        _seccomp_file = None;
+    }
+
+    // D-Bus
+    let mut dbus_proxy = None;
+    let _dbus_keepalive;
+    if config.dbus_enable {
+        let host_bus_socket = format!("{xdg_runtime_dir}/bus");
+        if socket::validate_existing_socket(&host_bus_socket).is_ok() {
+            if let (Some(socket_name), Some(proxy_path), Some(instance_id)) = (
+                config.dbus_proxy_socket_name.as_deref(),
+                config.dbus_proxy_path.as_deref(),
+                launch_instance_id.as_deref(),
+            ) {
+                let runtime_socket =
+                    features::dbus_runtime_socket_path(&xdg_runtime_dir, socket_name, instance_id);
+                let _ = socket::remove_stale_socket(&runtime_socket);
+
+                let mut proxy_cmd = process::Command::new(proxy_path);
+                proxy_cmd.env("XDG_RUNTIME_DIR", &xdg_runtime_dir);
+                proxy_cmd.env("CLOISTER_DBUS_PROXY_SOCKET", &runtime_socket);
+                proxy_cmd.env("CLOISTER_DBUS_PROXY_INSTANCE_ID", instance_id);
+
+                let mut child = match proxy_cmd.spawn() {
+                    Ok(child) => child,
+                    Err(e) => {
+                        eprintln!("{prefix}: start dbus proxy: {e}");
+                        cleanup(CleanupState {
+                            ssh_handle: ssh_filter_handle,
+                            dbus_proxy: None,
+                            pulse_bridge,
+                            wayland_socket: wayland_socket_path,
+                            machine_id_path,
+                            proc_privacy_state,
+                            anonymize_file_paths,
+                            flatpak_portal_state,
+                        });
+                        process::exit(1);
+                    }
+                };
+                if let Err(e) = wait_for_dbus_proxy_socket(&runtime_socket, &mut child) {
+                    eprintln!("{prefix}: {e}");
+                    cleanup(CleanupState {
+                        ssh_handle: ssh_filter_handle,
+                        dbus_proxy: Some(DbusProxyState {
+                            child,
+                            socket_path: runtime_socket,
+                        }),
+                        pulse_bridge,
+                        wayland_socket: wayland_socket_path,
+                        machine_id_path,
+                        proc_privacy_state,
+                        anonymize_file_paths,
+                        flatpak_portal_state,
+                    });
+                    process::exit(1);
+                }
+                dbus_proxy = Some(DbusProxyState {
+                    child,
+                    socket_path: runtime_socket,
+                });
+
+                // Best-effort prewarm held until the sandbox exits to prevent proxy shutdown.
+                let keepalive_socket_name = format!("{socket_name}-{instance_id}");
+                _dbus_keepalive =
+                    features::warm_dbus_proxy(&xdg_runtime_dir, &keepalive_socket_name);
+            } else {
+                _dbus_keepalive = None;
+            }
+        } else {
+            _dbus_keepalive = None;
+        }
+        if !xdg_runtime_dir.is_empty() {
+            extra_args.extend([
+                "--setenv".to_string(),
+                "DBUS_SESSION_BUS_ADDRESS".to_string(),
+                format!("unix:path={xdg_runtime_dir}/bus"),
+            ]);
+        }
+    } else {
+        _dbus_keepalive = None;
+    }
+
+    // --- 10. Parse command args and build run_cmd ---
+    let (run_cmd, is_interactive) = match prepare_run_cmd(&config, &cli.sandbox_args) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("{prefix}: {e}");
+            process::exit(2);
+        }
+    };
+
+    // --- 11. Spawn bwrap ---
+    let run_cmd = build_session_run_cmd(&config, run_cmd, is_interactive);
+    INTERACTIVE_MODE.store(is_interactive, Ordering::Release);
+
+    let (mut cmd, _args_fd) = match bwrap::build_bwrap_command(
+        &config,
+        &runtime_vars,
+        extra_args,
+        &run_cmd,
+        &effective_start_dir,
+        is_interactive,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("{prefix}: args pipe setup: {e}");
+            cleanup(CleanupState {
+                ssh_handle: ssh_filter_handle,
+                dbus_proxy,
+                pulse_bridge,
+                wayland_socket: wayland_socket_path,
+                machine_id_path,
+                proc_privacy_state,
+                anonymize_file_paths,
+                flatpak_portal_state,
+            });
+            process::exit(1);
+        }
+    };
+
+    let status = match spawn_and_wait(&mut cmd, is_interactive, flatpak_portal_state.as_ref()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{prefix}: exec bwrap: {e}");
+            cleanup(CleanupState {
+                ssh_handle: ssh_filter_handle,
+                dbus_proxy,
+                pulse_bridge,
+                wayland_socket: wayland_socket_path,
+                machine_id_path,
+                proc_privacy_state,
+                anonymize_file_paths,
+                flatpak_portal_state,
+            });
+            return 127;
+        }
+    };
+
+    // --- 12. Cleanup ---
+    cleanup(CleanupState {
+        ssh_handle: ssh_filter_handle,
+        dbus_proxy,
+        pulse_bridge,
+        wayland_socket: wayland_socket_path,
+        machine_id_path,
+        proc_privacy_state,
+        anonymize_file_paths,
+        flatpak_portal_state,
+    });
+
+    // --- 13. Exit with bwrap's exit code ---
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+fn print_build_info(config_path: Option<&str>) {
+    let env_revision = std::env::var("CLOISTER_BUILD_REV").ok();
+
+    if let Some(config_path) = config_path {
+        match SandboxConfig::load(config_path) {
+            Ok(config) => {
+                let revision = env_revision
+                    .or(config.build_revision.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!("cloister-sandbox {}", revision);
+                println!("config={}", config_path);
+                println!("sandbox={}", config.name);
+                return;
+            }
+            Err(e) => {
+                let revision = env_revision.unwrap_or_else(|| "unknown".to_string());
+                println!("cloister-sandbox {}", revision);
+                println!("config={}", config_path);
+                println!("config_error={}", e);
+                return;
+            }
+        }
+    }
+
+    let revision = env_revision.unwrap_or_else(|| "unknown".to_string());
+    println!("cloister-sandbox {}", revision);
+}
+
+fn cleanup(state: CleanupState) {
+    let CleanupState {
+        ssh_handle,
+        mut dbus_proxy,
+        mut pulse_bridge,
+        wayland_socket,
+        machine_id_path,
+        proc_privacy_state,
+        anonymize_file_paths,
+        flatpak_portal_state,
+    } = state;
+    // SSH filter cleanup (SshFilterHandle::drop handles this)
+    drop(ssh_handle);
+
+    if let Some(mut proxy) = dbus_proxy.take() {
+        let _ = proxy.child.kill();
+        let _ = proxy.child.wait();
+        let _ = socket::remove_stale_socket(&proxy.socket_path);
+    }
+
+    if let Some(mut bridge) = pulse_bridge.take() {
+        let _ = bridge.child.kill();
+        let _ = bridge.child.wait();
+        let _ = socket::remove_stale_socket(&bridge.socket_path);
+        let _ = std::fs::remove_dir(&bridge.runtime_dir);
+        for path in bridge.anonymize_file_paths.drain(..) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    // Wayland socket cleanup
+    if let Some(path) = wayland_socket {
+        let _ = cloister_sandbox_lib::socket::remove_stale_socket(&path);
+    }
+
+    // Machine-id temp file cleanup
+    if let Some(path) = machine_id_path {
+        let _ = std::fs::remove_file(&path);
+    }
+
+    if let Some(state) = proc_privacy_state {
+        for path in state.file_paths {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    // Anonymization temp file cleanup
+    for path in anonymize_file_paths {
+        let _ = std::fs::remove_file(&path);
+    }
+
+    if let Some(state) = flatpak_portal_state {
+        let _ = runtime::remove_path_if_exists(&state.flatpak_info_path);
+        let _ = runtime::remove_path_if_exists(&state.instance_dir);
+    }
+}
+
+fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
+    config.dbus_enable
+        || config.wayland_enable
+        || config.pulseaudio_socket_name.is_some()
+        || config.pipewire_pulse_config_path.is_some()
+        || config.pipewire_socket_name.is_some()
+        || config.ssh_enable
+}
+
+fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
+    if requires_xdg_runtime_dir(config) && xdg_runtime_dir.is_empty() {
+        return Err(
+            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or SSH features."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn build_session_run_cmd(
+    config: &SandboxConfig,
+    run_cmd: Vec<String>,
+    interactive: bool,
+) -> Vec<String> {
+    let Some(wrapper_path) = &config.pipewire_pulse_wrapper_path else {
+        return run_cmd;
+    };
+
+    let mut wrapped = vec![wrapper_path.clone()];
+    if interactive {
+        wrapped.push("--interactive".to_string());
+    }
+    wrapped.push("--".to_string());
+    wrapped.extend(run_cmd);
+    wrapped
+}
+
+/// Parse Cloister-owned flags and remaining sandbox arguments.
+fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
+    let mut parsed = CliArgs {
+        config_path: None,
+        after_netns: false,
+        sandbox_args: Vec::new(),
+    };
+    let mut i = 1;
+    let mut past_separator = false;
+    let mut shell_mode = false;
+
+    while i < args.len() {
+        if past_separator {
+            parsed.sandbox_args.push(args[i].clone());
+            i += 1;
+            continue;
+        }
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("cloister-sandbox: --config requires a path".to_string());
+                }
+                set_config_path(&mut parsed, args[i].clone())?;
+            }
+            "--after-netns" => {
+                set_after_netns(&mut parsed)?;
+            }
+            "--" => {
+                past_separator = true;
+            }
+            "--shell" => {
+                shell_mode = true;
+                parsed.sandbox_args.push(args[i].clone());
+            }
+            _ => {
+                if shell_mode {
+                    parsed.sandbox_args.push(args[i].clone());
+                } else {
+                    parsed.sandbox_args.extend(args[i..].iter().cloned());
+                    break;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Serialize tests that touch shared signal statics (CHILD_PID, SIGINT_COUNT, etc.).
+    fn signal_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn temp_test_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", process::id()))
+    }
+
+    fn config_with_flags(
+        dbus_enable: bool,
+        wayland_enable: bool,
+        pulseaudio_socket_name: Option<String>,
+        pipewire_socket_name: Option<String>,
+        pipewire_pulse_config_path: Option<String>,
+        pipewire_pulse_wrapper_path: Option<String>,
+        ssh_enable: bool,
+    ) -> SandboxConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
+            "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
+            "shell_interactive_args": ["-i"],
+            "shell_name": "zsh",
+            "home_directory": "/home/user",
+            "sandbox_home": "/home/user",
+            "store_mode": "host",
+            "store_roots": ["/nix/store/aaa-shell"],
+            "per_dir": {},
+            "copy_file_base": "/home/user/.local/state/cloister",
+            "git_path": "/nix/store/xxx-git/bin/git",
+            "dbus_enable": dbus_enable,
+            "wayland_enable": wayland_enable,
+            "pulseaudio_socket_name": pulseaudio_socket_name,
+            "pipewire_socket_name": pipewire_socket_name,
+            "pipewire_pulse_config_path": pipewire_pulse_config_path,
+            "pipewire_pulse_wrapper_path": pipewire_pulse_wrapper_path,
+            "ssh_enable": ssh_enable
+        }))
+        .expect("valid config")
+    }
+
+    #[test]
+    fn pulse_proxy_identity_uses_sandbox_home_leaf() {
+        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        config.anonymize = true;
+        config.sandbox_home = "/home/ubuntu".to_string();
+
+        assert_eq!(pulse_proxy_identity(&config).unwrap(), "ubuntu");
+    }
+
+    #[test]
+    fn pulse_proxy_identity_rejects_missing_leaf() {
+        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        config.anonymize = true;
+        config.sandbox_home = "/home/".to_string();
+
+        let err = pulse_proxy_identity(&config).unwrap_err();
+        assert!(err.contains("sandbox_home must end with a username"));
+    }
+
+    #[test]
+    fn parse_proc_children_handles_multiple_pids() {
+        assert_eq!(parse_proc_children("4724 4725\n"), vec![4724, 4725]);
+        assert_eq!(parse_proc_children("\n"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn pulse_proxy_command_sets_anonymous_identity() {
+        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        config.anonymize = true;
+        config.bwrap_path = "/nix/store/xxx-bubblewrap-subset-pid/bin/bwrap".to_string();
+        config.sandbox_home = "/home/ubuntu".to_string();
+        let cmd = build_pulse_only_proxy_command(
+            &config,
+            PulseProxyCommand {
+                runtime_dir: "/run/user/1000/cloister/pulse/test-1",
+                pipewire_remote: "/run/user/1000/cloister/pipewire/test",
+                identity: "ubuntu",
+                passwd_path: Some("/tmp/passwd"),
+                group_path: Some("/tmp/group"),
+                pipewire_pulse_bin: "/nix/store/xxx-pipewire/bin/pipewire-pulse",
+                pipewire_pulse_conf: "/nix/store/xxx-pulse.conf",
+            },
+        )
+        .unwrap();
+
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            cmd.get_program().to_string_lossy(),
+            "/nix/store/xxx-bubblewrap-subset-pid/bin/bwrap"
+        );
+        assert!(argv.windows(2).any(|w| w == ["--hostname", "ubuntu"]));
+        assert!(argv.windows(2).any(|w| w == ["--proc", "/proc"]));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/tmp/passwd", "/etc/passwd"])
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/tmp/group", "/etc/group"])
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--setenv", "HOME", "/home/ubuntu"])
+        );
+        assert!(argv.windows(3).any(|w| w == ["--setenv", "USER", "ubuntu"]));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--setenv", "LOGNAME", "ubuntu"])
+        );
+        assert!(argv.windows(2).any(|w| w == ["--dir", "/nix"]));
+        assert!(argv.windows(2).any(|w| w == ["--dir", "/nix/store"]));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/nix/store", "/nix/store"])
+        );
+        assert!(argv.windows(3).any(|w| w
+            == [
+                "--setenv",
+                "PIPEWIRE_REMOTE",
+                "/run/user/1000/cloister/pipewire/test"
+            ]));
+    }
+
+    #[test]
+    fn host_store_bind_args_mount_host_store_once() {
+        assert_eq!(
+            host_store_bind_args(),
+            vec![
+                "--ro-bind".to_string(),
+                "/nix/store".to_string(),
+                "/nix/store".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn image_store_bind_args_mount_store_root_once() {
+        assert_eq!(
+            image_store_bind_args("/run/cloister/images/abc123"),
+            vec![
+                "--ro-bind".to_string(),
+                "/run/cloister/images/abc123/nix/store".to_string(),
+                "/nix/store".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mount_flags_indicate_read_only_detects_read_only_bit() {
+        assert!(mount_flags_indicate_read_only(libc::ST_RDONLY));
+        assert!(mount_flags_indicate_read_only(libc::ST_RDONLY | 0x20));
+        assert!(!mount_flags_indicate_read_only(0));
+    }
+
+    #[test]
+    fn ensure_image_store_mounted_accepts_ready_mount() {
+        let dir = temp_test_dir("cloister-image-store-ready");
+        let mount_path = dir.join("abc123");
+        fs::create_dir_all(mount_path.join("nix/store/aaa-shell")).unwrap();
+        fs::write(
+            mount_path.join("meta.json"),
+            r#"{"version":1,"mode":"image-store","storeId":"abc123"}"#,
+        )
+        .unwrap();
+
+        let config = SandboxConfig {
+            store_mode: StoreMode::ImageStore,
+            store_id: Some("abc123".to_string()),
+            store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
+            store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
+            ..config_with_flags(false, false, None, None, None, None, false)
+        };
+
+        let err = ensure_image_store_mounted(&config, "test").unwrap_err();
+        assert!(err.contains("is not an active mountpoint"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ensure_image_store_mounted_rejects_missing_meta() {
+        let dir = temp_test_dir("cloister-image-store-missing-meta");
+        let mount_path = dir.join("abc123");
+        fs::create_dir_all(mount_path.join("nix/store/aaa-shell")).unwrap();
+
+        let config = SandboxConfig {
+            store_mode: StoreMode::ImageStore,
+            store_id: Some("abc123".to_string()),
+            store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
+            store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
+            ..config_with_flags(false, false, None, None, None, None, false)
+        };
+
+        let err = ensure_image_store_mounted(&config, "test").unwrap_err();
+        assert!(err.contains("is unreadable") || err.contains("is not an active mountpoint"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validate_image_store_meta_rejects_mismatched_store_id() {
+        let dir = temp_test_dir("cloister-image-store-wrong-meta");
+        let meta_path = dir.join("meta.json");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &meta_path,
+            r#"{"version":1,"mode":"image-store","storeId":"wrong"}"#,
+        )
+        .unwrap();
+
+        let meta = read_image_store_meta(&meta_path, "test").unwrap();
+        let err = validate_image_store_meta(&meta, &meta_path, "abc123", "test").unwrap_err();
+        assert!(err.contains("store ID 'wrong' but expected 'abc123'"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validate_image_store_meta_rejects_unexpected_mode() {
+        let meta_path = Path::new("/tmp/meta.json");
+        let meta = ImageStoreMeta {
+            version: 1,
+            mode: "host".to_string(),
+            store_id: "abc123".to_string(),
+        };
+
+        let err = validate_image_store_meta(&meta, meta_path, "abc123", "test").unwrap_err();
+        assert!(err.contains("unexpected mode 'host'"));
+    }
+
+    #[test]
+    fn validate_image_store_meta_rejects_unsupported_version() {
+        let meta_path = Path::new("/tmp/meta.json");
+        let meta = ImageStoreMeta {
+            version: 2,
+            mode: "image-store".to_string(),
+            store_id: "abc123".to_string(),
+        };
+
+        let err = validate_image_store_meta(&meta, meta_path, "abc123", "test").unwrap_err();
+        assert!(err.contains("unsupported version 2"));
+    }
+
+    #[test]
+    fn read_image_store_meta_rejects_invalid_json() {
+        let dir = temp_test_dir("cloister-image-store-invalid-json");
+        let meta_path = dir.join("meta.json");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&meta_path, "not-json").unwrap();
+
+        let err = read_image_store_meta(&meta_path, "test").unwrap_err();
+        assert!(err.contains("invalid JSON"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pulse_proxy_command_rejects_missing_image_store_mount_path() {
+        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        config.store_mode = StoreMode::ImageStore;
+        config.store_id = Some("abc123".to_string());
+        config.store_image_path = Some("/var/lib/cloister/images/abc123.squashfs".to_string());
+        config.store_mount_path = None;
+
+        let err = build_pulse_only_proxy_command(
+            &config,
+            PulseProxyCommand {
+                runtime_dir: "/run/user/1000/cloister/pulse/test-1",
+                pipewire_remote: "/run/user/1000/cloister/pipewire/test",
+                identity: "ubuntu",
+                passwd_path: None,
+                group_path: None,
+                pipewire_pulse_bin: "/nix/store/xxx-pipewire/bin/pipewire-pulse",
+                pipewire_pulse_conf: "/nix/store/xxx-pulse.conf",
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.contains("missing store_mount_path"));
+    }
+
+    #[test]
+    fn ensure_image_store_mounted_rejects_missing_store_subdir() {
+        let dir = temp_test_dir("cloister-image-store-missing-store");
+        let mount_path = dir.join("abc123");
+        fs::create_dir_all(&mount_path).unwrap();
+
+        let config = SandboxConfig {
+            store_mode: StoreMode::ImageStore,
+            store_id: Some("abc123".to_string()),
+            store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
+            store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
+            ..config_with_flags(false, false, None, None, None, None, false)
+        };
+
+        let err = ensure_image_store_mounted(&config, "test").unwrap_err();
+        assert!(err.contains("does not contain /nix/store"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_config_only() {
+        let args = s(&["cloister-sandbox", "--config", "/nix/store/xxx.json"]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert!(!parsed.after_netns);
+        assert!(parsed.sandbox_args.is_empty());
+    }
+
+    #[test]
+    fn parse_config_with_command() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "echo",
+            "hello",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert!(!parsed.after_netns);
+        assert_eq!(parsed.sandbox_args, vec!["echo", "hello"]);
+    }
+
+    #[test]
+    fn parse_after_netns() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--after-netns",
+            "--config",
+            "/nix/store/xxx.json",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert!(parsed.after_netns);
+        assert!(parsed.sandbox_args.is_empty());
+    }
+
+    #[test]
+    fn parse_shell_flag() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--shell",
+            "--config",
+            "/nix/store/xxx.json",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert_eq!(parsed.sandbox_args, vec!["--shell"]);
+    }
+
+    #[test]
+    fn parse_with_c_flag() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "-c",
+            "echo",
+            "hello",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.sandbox_args, vec!["-c", "echo", "hello"]);
+    }
+
+    #[test]
+    fn parse_version_without_config() {
+        let args = s(&["cloister-sandbox", "--version"]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert!(parsed.config_path.is_none());
+        assert!(!parsed.after_netns);
+        assert_eq!(parsed.sandbox_args, vec!["--version"]);
+    }
+
+    #[test]
+    fn parse_literal_separator_preserves_passthrough_args() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--",
+            "--",
+            "--version",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.sandbox_args, vec!["--", "--version"]);
+    }
+
+    #[test]
+    fn parse_separator_preserves_shell_literal_arg() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--",
+            "--shell",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.sandbox_args, vec!["--shell"]);
+    }
+
+    #[test]
+    fn parse_shell_before_separator_keeps_shell_flag() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--shell",
+            "--config",
+            "/nix/store/xxx.json",
+            "--",
+            "document.pdf",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert_eq!(parsed.sandbox_args, vec!["--shell", "document.pdf"]);
+    }
+
+    #[test]
+    fn parse_control_flags_after_sandbox_args() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--shell",
+            "--version",
+            "--config",
+            "/nix/store/xxx.json",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert_eq!(parsed.sandbox_args, vec!["--shell", "--version"]);
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_config_before_sandbox_args() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/one.json",
+            "--config",
+            "/nix/store/two.json",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+        assert_eq!(err, "cloister-sandbox: --config may only be passed once");
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_after_netns_before_sandbox_args() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--after-netns",
+            "--after-netns",
+            "--config",
+            "/nix/store/xxx.json",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+        assert_eq!(
+            err,
+            "cloister-sandbox: --after-netns may only be passed once"
+        );
+    }
+
+    #[test]
+    fn parse_config_after_command_args_is_preserved() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/one.json",
+            "git",
+            "--config",
+            "user.name=foo",
+            "status",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/one.json"));
+        assert_eq!(
+            parsed.sandbox_args,
+            vec!["git", "--config", "user.name=foo", "status"]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_missing_config_value() {
+        let args = s(&["cloister-sandbox", "--config"]);
+        let err = parse_cli_args(&args).unwrap_err();
+        assert_eq!(err, "cloister-sandbox: --config requires a path");
+    }
+
+    #[test]
+    fn prepare_run_cmd_rejects_bare_c_flag() {
+        let config = config_with_flags(false, false, None, None, None, None, false);
+        let result = prepare_run_cmd(&config, &s(&["-c"]));
+        assert_eq!(result, Err("`-c` requires a command"));
+    }
+
+    #[test]
+    fn prepare_run_cmd_shell_override_ignores_default_command() {
+        let config: SandboxConfig = serde_json::from_value(serde_json::json!({
+            "name": "test",
+            "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
+            "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
+            "shell_interactive_args": ["-i"],
+            "shell_name": "zsh",
+            "home_directory": "/home/user",
+            "sandbox_home": "/home/user",
+            "store_mode": "host",
+            "store_roots": ["/nix/store/aaa-shell"],
+            "per_dir": {},
+            "copy_file_base": "/home/user/.local/state/cloister",
+            "git_path": "/nix/store/xxx-git/bin/git",
+            "default_command": ["firefox"]
+        }))
+        .unwrap();
+
+        let (run_cmd, interactive) = prepare_run_cmd(&config, &s(&["--shell"])).unwrap();
+        assert_eq!(run_cmd, vec!["/nix/store/xxx-zsh/bin/zsh", "-i"]);
+        assert!(interactive);
+    }
+
+    #[test]
+    fn xdg_runtime_dir_required_when_feature_enabled() {
+        let config = config_with_flags(
+            false,
+            false,
+            Some("pulse/native".to_string()),
+            None,
+            None,
+            None,
+            false,
+        );
+        let result = validate_xdg_runtime_dir(&config, "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(
+            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or SSH features."
+        ));
+    }
+
+    #[test]
+    fn xdg_runtime_dir_not_required_when_features_disabled() {
+        let config = config_with_flags(false, false, None, None, None, None, false);
+        let result = validate_xdg_runtime_dir(&config, "");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn xdg_runtime_dir_present_satisfies_requirement() {
+        let config = config_with_flags(false, true, None, None, None, None, false);
+        let result = validate_xdg_runtime_dir(&config, "/run/user/1000");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn xdg_runtime_dir_required_when_pulse_only_bridge_enabled() {
+        let config = config_with_flags(
+            false,
+            false,
+            None,
+            None,
+            Some("/nix/store/xxx-pulse.conf".to_string()),
+            None,
+            false,
+        );
+        let result = validate_xdg_runtime_dir(&config, "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_command_uses_wrapper_for_interactive_shells() {
+        let config = config_with_flags(
+            false,
+            false,
+            None,
+            Some("pipewire-0".to_string()),
+            None,
+            Some("/nix/store/xxx-wrapper".to_string()),
+            false,
+        );
+        let run_cmd = vec!["/nix/store/xxx-zsh/bin/zsh".to_string(), "-i".to_string()];
+
+        assert_eq!(
+            build_session_run_cmd(&config, run_cmd, true),
+            vec![
+                "/nix/store/xxx-wrapper",
+                "--interactive",
+                "--",
+                "/nix/store/xxx-zsh/bin/zsh",
+                "-i",
+            ]
+        );
+    }
+
+    #[test]
+    fn session_command_uses_wrapper_for_noninteractive_commands() {
+        let config = config_with_flags(
+            false,
+            false,
+            None,
+            Some("pipewire-0".to_string()),
+            None,
+            Some("/nix/store/xxx-wrapper".to_string()),
+            false,
+        );
+        let run_cmd = vec!["firefox".to_string(), "--new-window".to_string()];
+
+        assert_eq!(
+            build_session_run_cmd(&config, run_cmd, false),
+            vec!["/nix/store/xxx-wrapper", "--", "firefox", "--new-window",]
+        );
+    }
+
+    #[test]
+    fn session_command_skips_wrapper_when_not_configured() {
+        let config = config_with_flags(
+            false,
+            false,
+            None,
+            Some("pipewire-0".to_string()),
+            None,
+            None,
+            false,
+        );
+        let run_cmd = vec!["firefox".to_string()];
+
+        assert_eq!(
+            build_session_run_cmd(&config, run_cmd.clone(), false),
+            run_cmd
+        );
+    }
+
+    /// Reset signal-handler statics so tests don't interfere with each other.
+    fn reset_signal_state() {
+        clear_signal_targets();
+        SIGINT_COUNT.store(0, Ordering::Release);
+        LAST_SIGINT_SEC.store(0, Ordering::Release);
+        INTERACTIVE_MODE.store(false, Ordering::Release);
+        unsafe {
+            libc::alarm(0);
+        }
+    }
+
+    #[test]
+    fn child_pid_initially_zero() {
+        let _guard = signal_lock().lock().unwrap();
+        assert_eq!(CHILD_PID.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn forward_signal_noop_when_no_child() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        // Should not panic or error when CHILD_PID is 0
+        forward_signal(libc::SIGTERM);
+        forward_signal(libc::SIGINT);
+        forward_signal(libc::SIGALRM);
+    }
+
+    #[test]
+    fn forward_signal_handles_nonexistent_pid() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        // Use a PID that almost certainly doesn't exist
+        CHILD_PID.store(i32::MAX, Ordering::Release);
+        forward_signal(libc::SIGTERM); // kill returns ESRCH, but we don't panic
+        reset_signal_state();
+    }
+
+    #[test]
+    fn clear_signal_targets_blocking_signals_resets_pids_and_alarm() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        CHILD_PID.store(123, Ordering::Release);
+        GRACEFUL_PID.store(456, Ordering::Release);
+        FORCE_PID.store(789, Ordering::Release);
+        unsafe {
+            libc::alarm(1);
+        }
+
+        clear_signal_targets_blocking_signals();
+
+        assert_eq!(CHILD_PID.load(Ordering::Acquire), 0);
+        assert_eq!(GRACEFUL_PID.load(Ordering::Acquire), 0);
+        assert_eq!(FORCE_PID.load(Ordering::Acquire), 0);
+        let remaining = unsafe { libc::alarm(0) };
+        assert_eq!(remaining, 0);
+        reset_signal_state();
+    }
+
+    #[test]
+    fn sigint_escalation_rapid() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        CHILD_PID.store(i32::MAX, Ordering::Release);
+
+        // First SIGINT: count should be 1
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 1);
+
+        // Second SIGINT (immediate — within escalation window): count should be 2
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 2);
+
+        // Third SIGINT: count should be 3
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 3);
+
+        reset_signal_state();
+    }
+
+    #[test]
+    fn sigint_resets_after_window() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        CHILD_PID.store(i32::MAX, Ordering::Release);
+
+        // First SIGINT
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 1);
+
+        // Simulate time passing beyond the escalation window
+        let past = monotonic_seconds() - SIGINT_ESCALATION_WINDOW_SECS - 1;
+        LAST_SIGINT_SEC.store(past, Ordering::Release);
+
+        // Next SIGINT should reset to 1
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 1);
+
+        reset_signal_state();
+    }
+
+    #[test]
+    fn parse_with_separator() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--after-netns",
+            "--",
+            "-c",
+            "echo",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+        assert_eq!(parsed.config_path.as_deref(), Some("/nix/store/xxx.json"));
+        assert!(parsed.after_netns);
+        assert_eq!(parsed.sandbox_args, vec!["-c", "echo"]);
+    }
+
+    #[test]
+    fn interactive_mode_skips_first_sigint() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        CHILD_PID.store(i32::MAX, Ordering::Release);
+        INTERACTIVE_MODE.store(true, Ordering::Release);
+
+        // First SIGINT in interactive mode: count increments but no kill is sent
+        // (the shell gets SIGINT from the terminal directly).
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 1);
+
+        // Second rapid SIGINT: escalates to SIGTERM (same as non-interactive)
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 2);
+
+        // Third rapid SIGINT: escalates to SIGKILL
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 3);
+
+        reset_signal_state();
+    }
+
+    #[test]
+    fn non_interactive_forwards_first_sigint() {
+        let _guard = signal_lock().lock().unwrap();
+        reset_signal_state();
+        CHILD_PID.store(i32::MAX, Ordering::Release);
+        INTERACTIVE_MODE.store(false, Ordering::Release);
+
+        // First SIGINT in non-interactive mode: forwarded (kill returns ESRCH
+        // for i32::MAX, but we don't panic — the important thing is the path
+        // through the match arm is exercised).
+        forward_signal(libc::SIGINT);
+        assert_eq!(SIGINT_COUNT.load(Ordering::Acquire), 1);
+
+        reset_signal_state();
+    }
+
+    #[test]
+    fn signal_target_uses_process_group_for_noninteractive_children() {
+        assert_eq!(force_signal_target(1234, false), -1234);
+    }
+
+    #[test]
+    fn signal_target_uses_direct_pid_for_interactive_children() {
+        assert_eq!(force_signal_target(1234, true), 1234);
+    }
+
+    #[test]
+    fn graceful_signal_target_uses_direct_pid() {
+        assert_eq!(graceful_signal_target(1234), 1234);
+    }
+
+    #[test]
+    fn find_descendant_pid_returns_matching_grandchild() {
+        let found = find_descendant_pid(
+            100,
+            |pid| match pid {
+                100 => Ok(vec![200]),
+                200 => Ok(vec![300]),
+                300 => Ok(Vec::new()),
+                other => Err(format!("unexpected pid {other}")),
+            },
+            |pid| Ok(pid == 300),
+        )
+        .unwrap();
+
+        assert_eq!(found, 300);
+    }
+
+    #[test]
+    fn parse_proc_nspid_reads_namespace_chain() {
+        assert_eq!(
+            parse_proc_nspid("Name:\tbwrap\nNSpid:\t1234 1\nState:\tS\n").unwrap(),
+            vec![1234, 1]
+        );
+    }
+
+    #[test]
+    fn is_sandbox_pid1_nspid_requires_expected_depth_and_inner_pid_one() {
+        assert!(is_sandbox_pid1_nspid(&[200, 300, 1], 3));
+        assert!(!is_sandbox_pid1_nspid(&[200, 1], 3));
+        assert!(!is_sandbox_pid1_nspid(&[200, 300, 2], 3));
+    }
+
+    #[test]
+    fn sandbox_signal_pid_prefers_child_of_sandbox_pid1_namespace() {
+        let signal_pids = sandbox_signal_pid_with_reader(
+            100,
+            |pid| match pid {
+                100 => Ok(vec![200]),
+                200 => Ok(vec![310, 300]),
+                301 => Ok(Vec::new()),
+                310 => Ok(vec![311]),
+                311 => Ok(Vec::new()),
+                300 => Ok(vec![301]),
+                other => Err(format!("unexpected pid {other}")),
+            },
+            |pid| match pid {
+                100 => Ok(vec![100]),
+                200 => Ok(vec![200]),
+                300 => Ok(vec![300, 1]),
+                301 => Ok(vec![301, 2]),
+                310 => Ok(vec![310, 99]),
+                311 => Ok(vec![311, 5]),
+                other => Err(format!("unexpected pid {other}")),
+            },
+        )
+        .unwrap();
+        assert_eq!(signal_pids, (301, 300));
+    }
+
+    #[test]
+    fn sandbox_signal_pid_skips_wrapper_helpers_before_main_process() {
+        let signal_pids = sandbox_signal_pid_with_reader(
+            100,
+            |pid| match pid {
+                100 => Ok(vec![200]),
+                200 => Ok(vec![300]),
+                300 => Ok(vec![320, 310]),
+                310 => Ok(Vec::new()),
+                320 => Ok(vec![321]),
+                321 => Ok(Vec::new()),
+                other => Err(format!("unexpected pid {other}")),
+            },
+            |pid| match pid {
+                100 => Ok(vec![100]),
+                200 => Ok(vec![200]),
+                300 => Ok(vec![300, 1]),
+                310 => Ok(vec![310, 2]),
+                320 => Ok(vec![320, 2]),
+                321 => Ok(vec![321, 3]),
+                other => Err(format!("unexpected pid {other}")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(signal_pids, (320, 300));
+    }
+}

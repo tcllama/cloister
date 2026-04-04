@@ -1,0 +1,136 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  treefmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - uses: DeterminateSystems/flake-checker-action@3164002371bc90729c68af0e24d5aacf20d7c9f6 # v12
+      - name: Run formatting and static checks
+        run: nix build --print-build-logs .#checks.x86_64-linux.treefmt
+  eval-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - test-cloister-bwrap
+          - test-cloister-examples
+          - test-cloister-registry
+          - test-cloister-presets
+          - test-cloister-sandbox-core
+          - test-cloister-gui-dbus-audio
+          - test-cloister-rendered-config
+          - test-cloister-image-store
+          - test-cloister-netns
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Run eval check
+        run: nix build --print-build-logs .#checks.x86_64-linux.${{ matrix.check }}
+  runtime-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - test-runtime-sandbox-core
+          - test-runtime-gui-dbus-audio
+          - test-runtime-image-store
+          - test-runtime-netns
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Run runtime check
+        run: nix build --print-build-logs .#checks.x86_64-linux.${{ matrix.check }}
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Clippy
+        run: nix develop -c make clippy
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Run Rust helper tests
+        run: nix develop -c make rust-test
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Audit Rust dependencies
+        run: |
+          for workspace in helpers/cloister-netns helpers/cloister-sandbox helpers/cloister-seccomp-filter helpers/cloister-seccomp-validate helpers/cloister-dbus-validate helpers/cloister-wayland-validate helpers/cloister-pipewire-validate; do
+            if [ -f "$workspace/Cargo.lock" ]; then
+              echo "::group::Auditing $workspace"
+              nix run .#cargo-audit -- audit -f "$workspace/Cargo.lock"
+              echo "::endgroup::"
+            fi
+          done
+  package-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      - name: Build published packages
+        run: |
+          nix build --print-build-logs \
+            .#packages.x86_64-linux.cloister-netns \
+            .#packages.x86_64-linux.cloister-wayland-validate \
+            .#packages.x86_64-linux.cloister-dbus-validate \
+            .#packages.x86_64-linux.cloister-pipewire-validate \
+            .#packages.x86_64-linux.cloister-seccomp-filter \
+            .#packages.x86_64-linux.cloister-seccomp-validate \
+            .#packages.x86_64-linux.cloister-sandbox
+  cachix-upload:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - treefmt
+      - eval-tests
+      - runtime-tests
+      - clippy
+      - rust-test
+      - cargo-audit
+      - package-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: cachix/install-nix-action@96951a368ba55167b55f1c916f7d416bac6505fe # v31.10.3
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Upload to Cachix
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+        with:
+          name: tcllama
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and upload packages
+        run: |
+          nix build --print-build-logs \
+            .#packages.x86_64-linux.cloister-netns \
+            .#packages.x86_64-linux.cloister-wayland-validate \
+            .#packages.x86_64-linux.cloister-dbus-validate \
+            .#packages.x86_64-linux.cloister-pipewire-validate \
+            .#packages.x86_64-linux.cloister-seccomp-filter \
+            .#packages.x86_64-linux.cloister-seccomp-validate \
+            .#packages.x86_64-linux.cloister-sandbox

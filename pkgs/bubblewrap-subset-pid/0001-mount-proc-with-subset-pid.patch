@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenCode <opencode@example.com>
+Date: Sun, 22 Mar 2026 00:00:00 +0000
+Subject: [PATCH] mount proc with subset=pid
+
+---
+ bubblewrap.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/bubblewrap.c b/bubblewrap.c
+index 5ad9d7e..23165fd 100644
+--- a/bubblewrap.c
++++ b/bubblewrap.c
+@@ -1118,7 +1118,7 @@ privileged_op (int         privileged_op_socket,
+       break;
+
+     case PRIV_SEP_OP_PROC_MOUNT:
+-      if (mount ("proc", arg1, "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0)
++      if (mount ("proc", arg1, "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, "subset=pid") != 0)
+         die_with_mount_error ("Can't mount proc on %s", arg1);
+       break;
+
+--
+2.49.0
