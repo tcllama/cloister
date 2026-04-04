@@ -1,4 +1,4 @@
-.PHONY: fmt lint clippy rust-test test test-eval test-runtime test-changed check clean
+.PHONY: fmt lint clippy rust-test cargo-audit test test-eval test-runtime test-changed check clean
 
 TEST_CHECKS ?= \
 	test-cloister-bwrap \
@@ -19,7 +19,7 @@ RUNTIME_TEST_CHECKS ?= \
 	test-runtime-netns
 RUNTIME_TEST_TARGETS = $(addprefix .#checks.x86_64-linux.,$(RUNTIME_TEST_CHECKS))
 ALL_TEST_TARGETS = $(TEST_TARGETS) $(RUNTIME_TEST_TARGETS)
-RUST_TEST_HELPERS ?= \
+RUST_HELPER_WORKSPACES ?= \
 	helpers/cloister-dbus-validate \
 	helpers/cloister-netns \
 	helpers/cloister-pipewire-validate \
@@ -27,6 +27,8 @@ RUST_TEST_HELPERS ?= \
 	helpers/cloister-wayland-validate \
 	helpers/cloister-seccomp-filter \
 	helpers/cloister-seccomp-validate
+RUST_TEST_HELPERS ?= $(RUST_HELPER_WORKSPACES)
+RUST_AUDIT_WORKSPACES ?= $(RUST_HELPER_WORKSPACES)
 BASE_REF ?= main
 TEST_CHANGED_FILES ?=
 
@@ -53,6 +55,10 @@ clippy:
 # Rust helper tests (inside the dev shell for system dependencies)
 rust-test:
 	nix develop -c sh -eu -c 'for dir in "$$@"; do printf "Running Rust tests in %s\n" "$$dir"; (cd "$$dir" && cargo test); done' sh $(RUST_TEST_HELPERS)
+
+# Audit Rust helper dependencies against the RustSec advisory DB
+cargo-audit:
+	nix develop -c sh -eu -c 'for dir in "$$@"; do if [ -f "$$dir/Cargo.lock" ]; then printf "Auditing %s\n" "$$dir"; cargo-audit audit -f "$$dir/Cargo.lock"; fi; done' sh $(RUST_AUDIT_WORKSPACES)
 
 # Full test suite; Nix can build eval and runtime checks concurrently in one invocation
 test:

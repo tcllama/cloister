@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,6 +14,7 @@
     {
       self,
       nixpkgs,
+      nixpkgs-unstable,
       treefmt-nix,
       ...
     }:
@@ -52,10 +54,11 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          unstablePkgs = nixpkgs-unstable.legacyPackages.${system};
         in
         {
           bubblewrap-subset-pid = pkgs.callPackage ./pkgs/bubblewrap-subset-pid { };
-          inherit (pkgs) cargo-audit;
+          inherit (unstablePkgs) cargo-audit;
           cloister-netns = pkgs.callPackage ./helpers/cloister-netns { };
           cloister-wayland-validate = pkgs.callPackage ./helpers/cloister-wayland-validate { };
           cloister-dbus-validate = pkgs.callPackage ./helpers/cloister-dbus-validate { };
@@ -70,11 +73,13 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          cargoAudit = self.packages.${system}.cargo-audit;
         in
         {
           default = pkgs.mkShell {
             nativeBuildInputs = with pkgs; [
               cargo
+              cargoAudit
               rustc
               clippy
               clang
