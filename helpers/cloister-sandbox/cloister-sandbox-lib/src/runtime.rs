@@ -378,6 +378,7 @@ pub fn build_runtime_vars(
     sandbox_dest: &str,
     dir_hash: &str,
     xdg_runtime_dir: &str,
+    host_xdg_runtime_dir: &str,
 ) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     vars.insert("HOME".to_string(), home.to_string());
@@ -386,6 +387,10 @@ pub fn build_runtime_vars(
     vars.insert("SANDBOX_DEST".to_string(), sandbox_dest.to_string());
     vars.insert("DIR_HASH".to_string(), dir_hash.to_string());
     vars.insert("XDG_RUNTIME_DIR".to_string(), xdg_runtime_dir.to_string());
+    vars.insert(
+        "HOST_XDG_RUNTIME_DIR".to_string(),
+        host_xdg_runtime_dir.to_string(),
+    );
     vars
 }
 
@@ -568,6 +573,28 @@ mod tests {
         assert!(err.contains("refusing to overwrite symlink runtime file"));
 
         remove_path_if_exists(dir.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn build_runtime_vars_keeps_host_and_sandbox_runtime_dirs_distinct() {
+        let vars = build_runtime_vars(
+            "/home/user",
+            "/home/sandbox",
+            "/work/tree",
+            "/work/tree",
+            "dir-hash",
+            "/run/user/1000",
+            "/host/run/user/1000",
+        );
+
+        assert_eq!(
+            vars.get("XDG_RUNTIME_DIR").map(String::as_str),
+            Some("/run/user/1000")
+        );
+        assert_eq!(
+            vars.get("HOST_XDG_RUNTIME_DIR").map(String::as_str),
+            Some("/host/run/user/1000")
+        );
     }
 
     #[test]

@@ -644,9 +644,8 @@ let
             type = lib.types.listOf lib.types.str;
             description = ''
               Host environment variables to pass through when they are set.
-              The default is set in the submodule config block (locale variables
-              and, for GUI/audio sandboxes, XDG_RUNTIME_DIR). You can append
-              more via list merging.
+              The default is set in the submodule config block (locale variables).
+              Use `lib.mkAfter` to append more while preserving those defaults.
             '';
           };
 
@@ -1583,30 +1582,19 @@ let
             ];
 
             passthroughEnv = lib.mkDefault (
-              (
-                if config.sandbox.anonymize.enable then
-                  [ ]
-                else
-                  [
-                    "LANG"
-                    "LC_ALL"
-                    "LC_CTYPE"
-                    "LC_MESSAGES"
-                    "LC_NUMERIC"
-                    "LC_TIME"
-                    "LC_COLLATE"
-                    "LC_MONETARY"
-                  ]
-              )
-              ++ lib.optionals (
-                config.dbus.enable
-                || config.gui.wayland.enable
-                || config.gui.x11.enable
-                || config.audio.pulseaudio.enable
-                || config.audio.pipewire.enable
-                || config.audio.pipewire.pulseOnly
-                || config.ssh.enable
-              ) [ "XDG_RUNTIME_DIR" ]
+              if config.sandbox.anonymize.enable then
+                [ ]
+              else
+                [
+                  "LANG"
+                  "LC_ALL"
+                  "LC_CTYPE"
+                  "LC_MESSAGES"
+                  "LC_NUMERIC"
+                  "LC_TIME"
+                  "LC_COLLATE"
+                  "LC_MONETARY"
+                ]
             );
           };
 

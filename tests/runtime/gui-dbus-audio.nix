@@ -152,7 +152,6 @@ pkgs.testers.runNixOSTest (_: {
   testScript = ''
     start_all()
 
-    machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("cloister-runtime-dbus-fixture.service")
     machine.wait_until_succeeds("test -S /tmp/cloister-runtime-user/bus")
     machine.wait_until_succeeds("test -S /tmp/cloister-runtime-user/cloister/dbus/browser-runtime-portal")

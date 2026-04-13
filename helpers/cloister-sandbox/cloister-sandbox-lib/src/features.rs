@@ -40,8 +40,20 @@ pub fn pulseaudio_args(xdg_runtime_dir: &str, socket_name: &str) -> Vec<String> 
     pulseaudio_args_with_source(&socket, &sandbox_socket)
 }
 
+/// Build PulseAudio forwarding arguments with an explicit sandbox runtime dir.
+pub fn pulseaudio_args_with_dest(
+    host_xdg_runtime_dir: &str,
+    socket_name: &str,
+    sandbox_xdg_runtime_dir: &str,
+    sandbox_socket_name: &str,
+) -> Vec<String> {
+    let socket = format!("{host_xdg_runtime_dir}/{socket_name}");
+    let sandbox_socket = format!("{sandbox_xdg_runtime_dir}/{sandbox_socket_name}");
+    pulseaudio_args_with_source(&socket, &sandbox_socket)
+}
+
 /// Build Wayland forwarding arguments (non-security-context mode).
-pub fn wayland_raw_args(xdg_runtime_dir: &str) -> Vec<String> {
+pub fn wayland_raw_args(host_xdg_runtime_dir: &str, sandbox_xdg_runtime_dir: &str) -> Vec<String> {
     let display = match std::env::var("WAYLAND_DISPLAY") {
         Ok(d) if !d.is_empty() => d,
         _ => return Vec::new(),
@@ -63,16 +75,17 @@ pub fn wayland_raw_args(xdg_runtime_dir: &str) -> Vec<String> {
             eprintln!("Warning: invalid WAYLAND_DISPLAY value '{display}'");
             return Vec::new();
         }
-        if xdg_runtime_dir.is_empty() {
+        if host_xdg_runtime_dir.is_empty() || sandbox_xdg_runtime_dir.is_empty() {
             eprintln!("Warning: WAYLAND_DISPLAY is set but XDG_RUNTIME_DIR is empty");
             return Vec::new();
         }
-        let full_path = format!("{xdg_runtime_dir}/{display}");
+        let full_path = format!("{host_xdg_runtime_dir}/{display}");
+        let sandbox_path = format!("{sandbox_xdg_runtime_dir}/{display}");
         if let Err(e) = socket::validate_existing_socket(&full_path) {
             eprintln!("Warning: invalid WAYLAND_DISPLAY socket '{full_path}': {e}");
             return Vec::new();
         }
-        args.extend(["--ro-bind-try".to_string(), full_path.clone(), full_path]);
+        args.extend(["--ro-bind-try".to_string(), full_path, sandbox_path]);
     }
     args.extend([
         "--setenv".to_string(),
@@ -945,17 +958,18 @@ pub fn video_args() -> Vec<String> {
 
 /// Build PipeWire native socket forwarding arguments if the socket exists and is valid.
 pub fn pipewire_args(xdg_runtime_dir: &str, socket_name: &str) -> Vec<String> {
-    pipewire_args_with_dest(xdg_runtime_dir, socket_name, "pipewire-0")
+    pipewire_args_with_dest(xdg_runtime_dir, socket_name, xdg_runtime_dir, "pipewire-0")
 }
 
 /// Build PipeWire native socket forwarding arguments with a custom in-sandbox destination.
 pub fn pipewire_args_with_dest(
-    xdg_runtime_dir: &str,
+    host_xdg_runtime_dir: &str,
     socket_name: &str,
+    sandbox_xdg_runtime_dir: &str,
     sandbox_socket_name: &str,
 ) -> Vec<String> {
-    let host_socket = format!("{xdg_runtime_dir}/{socket_name}");
-    let sandbox_socket = format!("{xdg_runtime_dir}/{sandbox_socket_name}");
+    let host_socket = format!("{host_xdg_runtime_dir}/{socket_name}");
+    let sandbox_socket = format!("{sandbox_xdg_runtime_dir}/{sandbox_socket_name}");
 
     if !Path::new(&host_socket).exists() {
         eprintln!("Warning: PipeWire socket not found at {host_socket}");
@@ -1389,6 +1403,7 @@ mod tests {
         let args = pipewire_args_with_dest(
             dir.to_str().unwrap(),
             "pipewire-0",
+            dir.to_str().unwrap(),
             "cloister/pipewire-pulse/test",
         );
         assert!(

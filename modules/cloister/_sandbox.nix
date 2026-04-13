@@ -217,7 +217,7 @@ let
 
       portalRwBinds = lib.optionals sCfg.dbus.portal.fileChooser (
         let
-          documentPortalPath = "$XDG_RUNTIME_DIR/doc/by-app/${flatpakAppId}";
+          documentPortalPath = "$HOST_XDG_RUNTIME_DIR/doc/by-app/${flatpakAppId}";
         in
         [
           {
@@ -703,7 +703,13 @@ let
       );
 
       # --- Computed env var override detection ---
-      computedEnvKeys = lib.attrNames computedEnv;
+      computedEnvKeys = lib.unique (
+        [
+          "XDG_RUNTIME_DIR"
+          "HOST_XDG_RUNTIME_DIR"
+        ]
+        ++ lib.attrNames computedEnv
+      );
       overriddenEnvKeys = lib.intersectLists computedEnvKeys (lib.attrNames sCfg.sandbox.env);
 
       dbusEnvKeys = lib.attrNames dbusEnv;

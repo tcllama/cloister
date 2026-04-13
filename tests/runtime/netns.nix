@@ -53,7 +53,6 @@ pkgs.testers.runNixOSTest (_: {
   testScript = ''
     start_all()
 
-    machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("cloister-netns-dev.service")
     machine.wait_for_unit("cloister-netns-lanonly.service")
     machine.wait_for_unit("localhost-http.service")

@@ -55,7 +55,6 @@ pkgs.testers.runNixOSTest (_: {
   testScript = ''
     start_all()
 
-    machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("cloister-image-store-clean.timer")
     machine.wait_until_succeeds("mountpoint -q /run/cloister/images/abc123")
 

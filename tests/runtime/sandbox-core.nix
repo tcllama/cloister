@@ -21,6 +21,8 @@ let
           preset = "hardened";
           defaultCommand = [ "sh" ];
           validators.enable = false;
+          ssh.enable = true;
+          sandbox.passthroughEnv = lib.mkAfter [ "TMUX" ];
           registry = {
             aliases.sandboxalias = "printenv CLOISTER";
             commands = [ "printenv" ];
@@ -45,6 +47,7 @@ pkgs.testers.runNixOSTest (_: {
     {
       environment.systemPackages = [
         pkgs.jq
+        pkgs.openssh
         pkgs.python3
         pkgs.zsh
       ]
@@ -93,7 +96,6 @@ pkgs.testers.runNixOSTest (_: {
   testScript = ''
     start_all()
 
-    machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("cloister-runtime-sandbox-fixture.service")
 
     tester_shell = (
@@ -133,5 +135,6 @@ pkgs.testers.runNixOSTest (_: {
         + "    if sock is not None:\n"
         + "        sock.close()'"
     )
+
   '';
 })

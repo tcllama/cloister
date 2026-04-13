@@ -120,6 +120,16 @@ let
     };
   };
 
+  xdgRuntimeDirPassthrough = hm {
+    cloister = {
+      enable = true;
+      sandboxes.browser = {
+        gui.wayland.enable = true;
+        sandbox.passthroughEnv = [ "XDG_RUNTIME_DIR" ];
+      };
+    };
+  };
+
   allPortalsEval = hm {
     cloister = {
       enable = true;
@@ -136,6 +146,13 @@ let
           };
         };
       };
+    };
+  };
+
+  sshOnlyEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.browser.ssh.enable = true;
     };
   };
 
@@ -395,6 +412,7 @@ let
   x11Config = x11Eval.config.cloister._internal.sandboxConfigs.browser;
   rawWaylandConfig = rawWaylandEval.config.cloister._internal.sandboxConfigs.browser;
   allPortalsConfig = allPortalsEval.config.cloister._internal.sandboxConfigs.browser;
+  sshOnlyConfig = sshOnlyEval.config.cloister._internal.sandboxConfigs.browser;
   dbusDisabledConfig = dbusDisabledEval.config.cloister._internal.sandboxConfigs.browser;
   pipewireDisabledConfig = pipewireDisabledEval.config.cloister._internal.sandboxConfigs.browser;
 
@@ -445,13 +463,16 @@ let
     (checks.expectContains "scale factor renders QT scale" ''"QT_SCALE_FACTOR","1.500000"''
       browserStaticArgs
     )
-    (checks.expectContains "xdg runtime dir passthrough appears with gui/dbus/audio"
-      ''"XDG_RUNTIME_DIR"''
-      (builtins.toJSON sandboxConfig.passthrough_env)
-    )
+    (checks.expectNotContains "ssh alone does not force xdg runtime passthrough" ''"XDG_RUNTIME_DIR"'' (
+      builtins.toJSON sshOnlyConfig.passthrough_env
+    ))
     (checks.expectNotContains "xdg runtime dir is absent without gui/dbus/audio" ''"XDG_RUNTIME_DIR"'' (
       builtins.toJSON guiOffConfig.passthrough_env
     ))
+    (checks.expectNotContains "gui dbus audio no longer passthroughs xdg runtime dir"
+      ''"XDG_RUNTIME_DIR"''
+      (builtins.toJSON sandboxConfig.passthrough_env)
+    )
     (checks.expectEq "wayland toggle renders" true sandboxConfig.wayland_enable)
     (checks.expectEq "x11 toggle renders" false sandboxConfig.x11_enable)
     (checks.expectEq "x11 can be enabled" true x11Config.x11_enable)
@@ -599,6 +620,10 @@ let
     )
     (checks.expectAssertionMessage "dbus managed env cannot be overridden" dbusEnvOverride.assertions
       "managed by dbus"
+    )
+    (checks.expectAssertionMessage "xdg runtime dir passthrough is blocked"
+      xdgRuntimeDirPassthrough.assertions
+      "sandbox.passthroughEnv cannot include computed/managed keys: XDG_RUNTIME_DIR"
     )
     (checks.expectAssertionMessage "D-Bus names need dotted form" invalidDbusName.assertions
       "D-Bus policy names are invalid"

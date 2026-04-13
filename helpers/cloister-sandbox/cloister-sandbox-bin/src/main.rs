@@ -1030,11 +1030,16 @@ fn run() -> i32 {
         process::exit(1);
     }
 
-    let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
-    if let Err(e) = validate_xdg_runtime_dir(&config, &xdg_runtime_dir) {
+    let host_xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    if let Err(e) = validate_xdg_runtime_dir(&config, &host_xdg_runtime_dir) {
         eprintln!("{prefix}: {e}");
         process::exit(1);
     }
+    let sandbox_xdg_runtime_dir = if host_xdg_runtime_dir.is_empty() {
+        String::new()
+    } else {
+        format!("/run/user/{}", cloister_sandbox_lib::socket::current_uid())
+    };
     // --- 2b. Install signal handlers so SIGTERM/SIGINT/SIGHUP forward to children ---
     install_signal_handlers();
 
@@ -1206,7 +1211,8 @@ fn run() -> i32 {
         &sandbox_dir,
         &sandbox_dest,
         &dir_hash,
-        &xdg_runtime_dir,
+        &sandbox_xdg_runtime_dir,
+        &host_xdg_runtime_dir,
     );
 
     let launch_instance_id = if config.dbus_enable || config.flatpak_app_id.is_some() {
@@ -1221,7 +1227,7 @@ fn run() -> i32 {
     ) {
         runtime_vars.insert(
             "DBUS_PROXY_SOCKET".to_string(),
-            features::dbus_runtime_socket_path(&xdg_runtime_dir, socket_name, instance_id),
+            features::dbus_runtime_socket_path(&host_xdg_runtime_dir, socket_name, instance_id),
         );
     }
 
@@ -1230,8 +1236,8 @@ fn run() -> i32 {
             .clone()
             .expect("launch instance id must exist when portal integration is enabled");
         let flatpak_info_path =
-            format!("{xdg_runtime_dir}/cloister/flatpak-info/{instance_id}.ini");
-        let instance_dir = format!("{xdg_runtime_dir}/.flatpak/{instance_id}");
+            format!("{host_xdg_runtime_dir}/cloister/flatpak-info/{instance_id}.ini");
+        let instance_dir = format!("{host_xdg_runtime_dir}/.flatpak/{instance_id}");
 
         if let Err(e) = runtime::write_flatpak_info(&flatpak_info_path, app_id, &instance_id) {
             eprintln!("{prefix}: {e}");
@@ -1278,7 +1284,7 @@ fn run() -> i32 {
         None
     };
 
-    let pulse_bridge = match start_pulse_only_bridge(&config, &xdg_runtime_dir, &prefix) {
+    let pulse_bridge = match start_pulse_only_bridge(&config, &host_xdg_runtime_dir, &prefix) {
         Ok(bridge) => bridge,
         Err(e) => {
             eprintln!("{e}");
@@ -1300,6 +1306,14 @@ fn run() -> i32 {
     // Passthrough env
     extra_args.extend(bwrap::passthrough_env_args(&config.passthrough_env));
 
+    if !sandbox_xdg_runtime_dir.is_empty() {
+        extra_args.extend([
+            "--setenv".to_string(),
+            "XDG_RUNTIME_DIR".to_string(),
+            sandbox_xdg_runtime_dir.clone(),
+        ]);
+    }
+
     // ZDOTDIR (only forward host ZDOTDIR when host shell config is enabled)
     if config.shell_name == "zsh" && config.shell_host_config {
         extra_args.extend(bwrap::zdotdir_args(&configured_home, &config.sandbox_home));
@@ -1317,27 +1331,47 @@ fn run() -> i32 {
                     }
                     Ok(()) => {
                         let filter_socket =
-                            format!("{xdg_runtime_dir}/cloister-ssh-filter-{}", process::id());
-                        match ssh_filter::start_listener(
-                            &filter_socket,
-                            &auth_sock,
-                            config.ssh_allow_fingerprints.clone(),
-                            config.ssh_filter_timeout_seconds,
-                        ) {
-                            Ok(handle) => {
-                                extra_args.extend([
-                                    "--bind".to_string(),
-                                    filter_socket.clone(),
-                                    filter_socket.clone(),
-                                    "--setenv".to_string(),
-                                    "SSH_AUTH_SOCK".to_string(),
-                                    filter_socket,
-                                ]);
-                                ssh_filter_handle = Some(handle);
-                            }
-                            Err(e) => {
-                                eprintln!("{prefix}: ssh filter setup failed: {e}");
-                                ssh_filter_handle = None;
+                            ssh_filter_socket_path(&host_xdg_runtime_dir, process::id());
+                        let filter_socket_ready = Path::new(&filter_socket)
+                            .parent()
+                            .map(|parent| parent.to_string_lossy().to_string())
+                            .map_or(Ok(()), |parent| {
+                                runtime::ensure_dirs(std::slice::from_ref(&parent))
+                            });
+                        if let Err(e) = filter_socket_ready {
+                            eprintln!("{prefix}: ssh filter setup failed: {e}");
+                            ssh_filter_handle = None;
+                        } else {
+                            let (sandbox_auth_sock, sandbox_auth_sock_parent) =
+                                sandbox_ssh_auth_sock(
+                                    &auth_sock,
+                                    &host_xdg_runtime_dir,
+                                    &sandbox_xdg_runtime_dir,
+                                );
+                            match ssh_filter::start_listener(
+                                &filter_socket,
+                                &auth_sock,
+                                config.ssh_allow_fingerprints.clone(),
+                                config.ssh_filter_timeout_seconds,
+                            ) {
+                                Ok(handle) => {
+                                    if let Some(parent) = sandbox_auth_sock_parent {
+                                        extra_args.extend(["--dir".to_string(), parent]);
+                                    }
+                                    extra_args.extend([
+                                        "--bind".to_string(),
+                                        filter_socket.clone(),
+                                        sandbox_auth_sock.clone(),
+                                        "--setenv".to_string(),
+                                        "SSH_AUTH_SOCK".to_string(),
+                                        sandbox_auth_sock,
+                                    ]);
+                                    ssh_filter_handle = Some(handle);
+                                }
+                                Err(e) => {
+                                    eprintln!("{prefix}: ssh filter setup failed: {e}");
+                                    ssh_filter_handle = None;
+                                }
                             }
                         }
                     }
@@ -1354,13 +1388,21 @@ fn run() -> i32 {
                 if let Err(e) = socket::validate_existing_socket(&auth_sock) {
                     eprintln!("{prefix}: invalid SSH_AUTH_SOCK '{auth_sock}': {e}");
                 } else {
+                    let (sandbox_auth_sock, sandbox_auth_sock_parent) = sandbox_ssh_auth_sock(
+                        &auth_sock,
+                        &host_xdg_runtime_dir,
+                        &sandbox_xdg_runtime_dir,
+                    );
+                    if let Some(parent) = sandbox_auth_sock_parent {
+                        extra_args.extend(["--dir".to_string(), parent]);
+                    }
                     extra_args.extend([
                         "--bind".to_string(),
                         auth_sock.clone(),
-                        auth_sock.clone(),
+                        sandbox_auth_sock.clone(),
                         "--setenv".to_string(),
                         "SSH_AUTH_SOCK".to_string(),
-                        auth_sock,
+                        sandbox_auth_sock,
                     ]);
                 }
             }
@@ -1372,9 +1414,14 @@ fn run() -> i32 {
 
     // PulseAudio
     if let Some(socket_name) = &config.pulseaudio_socket_name {
-        extra_args.extend(features::pulseaudio_args(&xdg_runtime_dir, socket_name));
+        extra_args.extend(features::pulseaudio_args_with_dest(
+            &host_xdg_runtime_dir,
+            socket_name,
+            &sandbox_xdg_runtime_dir,
+            "pulse/native",
+        ));
     } else if let Some(bridge) = &pulse_bridge {
-        let sandbox_socket = format!("{xdg_runtime_dir}/pulse/native");
+        let sandbox_socket = format!("{sandbox_xdg_runtime_dir}/pulse/native");
         extra_args.extend(features::pulseaudio_args_with_source(
             &bridge.socket_path,
             &sandbox_socket,
@@ -1383,7 +1430,12 @@ fn run() -> i32 {
 
     // PipeWire
     if let Some(socket_name) = &config.pipewire_socket_name {
-        extra_args.extend(features::pipewire_args(&xdg_runtime_dir, socket_name));
+        extra_args.extend(features::pipewire_args_with_dest(
+            &host_xdg_runtime_dir,
+            socket_name,
+            &sandbox_xdg_runtime_dir,
+            "pipewire-0",
+        ));
     }
 
     // Wayland
@@ -1395,7 +1447,7 @@ fn run() -> i32 {
             .unwrap_or(false)
         {
             if config.wayland_security_context {
-                let wayland_dir = format!("{xdg_runtime_dir}/cloister/wayland");
+                let wayland_dir = format!("{host_xdg_runtime_dir}/cloister/wayland");
                 if let Err(e) = std::fs::create_dir_all(&wayland_dir) {
                     eprintln!("{prefix}: wayland runtime dir: {e}");
                     process::exit(1);
@@ -1417,7 +1469,7 @@ fn run() -> i32 {
                         extra_args.extend([
                             "--ro-bind".to_string(),
                             socket.clone(),
-                            format!("{xdg_runtime_dir}/wayland-1"),
+                            format!("{sandbox_xdg_runtime_dir}/wayland-1"),
                             "--setenv".to_string(),
                             "WAYLAND_DISPLAY".to_string(),
                             "wayland-1".to_string(),
@@ -1431,7 +1483,10 @@ fn run() -> i32 {
                     }
                 }
             } else {
-                extra_args.extend(features::wayland_raw_args(&xdg_runtime_dir));
+                extra_args.extend(features::wayland_raw_args(
+                    &host_xdg_runtime_dir,
+                    &sandbox_xdg_runtime_dir,
+                ));
                 _wayland_keep_alive = None;
                 wayland_socket_path = None;
             }
@@ -1538,19 +1593,22 @@ fn run() -> i32 {
     let mut dbus_proxy = None;
     let _dbus_keepalive;
     if config.dbus_enable {
-        let host_bus_socket = format!("{xdg_runtime_dir}/bus");
+        let host_bus_socket = format!("{host_xdg_runtime_dir}/bus");
         if socket::validate_existing_socket(&host_bus_socket).is_ok() {
             if let (Some(socket_name), Some(proxy_path), Some(instance_id)) = (
                 config.dbus_proxy_socket_name.as_deref(),
                 config.dbus_proxy_path.as_deref(),
                 launch_instance_id.as_deref(),
             ) {
-                let runtime_socket =
-                    features::dbus_runtime_socket_path(&xdg_runtime_dir, socket_name, instance_id);
+                let runtime_socket = features::dbus_runtime_socket_path(
+                    &host_xdg_runtime_dir,
+                    socket_name,
+                    instance_id,
+                );
                 let _ = socket::remove_stale_socket(&runtime_socket);
 
                 let mut proxy_cmd = process::Command::new(proxy_path);
-                proxy_cmd.env("XDG_RUNTIME_DIR", &xdg_runtime_dir);
+                proxy_cmd.env("XDG_RUNTIME_DIR", &host_xdg_runtime_dir);
                 proxy_cmd.env("CLOISTER_DBUS_PROXY_SOCKET", &runtime_socket);
                 proxy_cmd.env("CLOISTER_DBUS_PROXY_INSTANCE_ID", instance_id);
 
@@ -1596,18 +1654,18 @@ fn run() -> i32 {
                 // Best-effort prewarm held until the sandbox exits to prevent proxy shutdown.
                 let keepalive_socket_name = format!("{socket_name}-{instance_id}");
                 _dbus_keepalive =
-                    features::warm_dbus_proxy(&xdg_runtime_dir, &keepalive_socket_name);
+                    features::warm_dbus_proxy(&host_xdg_runtime_dir, &keepalive_socket_name);
             } else {
                 _dbus_keepalive = None;
             }
         } else {
             _dbus_keepalive = None;
         }
-        if !xdg_runtime_dir.is_empty() {
+        if !sandbox_xdg_runtime_dir.is_empty() {
             extra_args.extend([
                 "--setenv".to_string(),
                 "DBUS_SESSION_BUS_ADDRESS".to_string(),
-                format!("unix:path={xdg_runtime_dir}/bus"),
+                format!("unix:path={sandbox_xdg_runtime_dir}/bus"),
             ]);
         }
     } else {
@@ -1779,17 +1837,43 @@ fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
         || config.pulseaudio_socket_name.is_some()
         || config.pipewire_pulse_config_path.is_some()
         || config.pipewire_socket_name.is_some()
-        || config.ssh_enable
 }
 
 fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
     if requires_xdg_runtime_dir(config) && xdg_runtime_dir.is_empty() {
         return Err(
-            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or SSH features."
-                .to_string(),
+            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, or audio features.".to_string(),
         );
     }
     Ok(())
+}
+
+fn sandbox_ssh_auth_sock(
+    auth_sock: &str,
+    host_xdg_runtime_dir: &str,
+    sandbox_xdg_runtime_dir: &str,
+) -> (String, Option<String>) {
+    if !host_xdg_runtime_dir.is_empty() && !sandbox_xdg_runtime_dir.is_empty() {
+        if let Ok(relative) = Path::new(auth_sock).strip_prefix(host_xdg_runtime_dir) {
+            let sandbox_auth_sock = Path::new(sandbox_xdg_runtime_dir).join(relative);
+            let sandbox_auth_sock = sandbox_auth_sock.to_string_lossy().to_string();
+            let sandbox_parent = Path::new(&sandbox_auth_sock)
+                .parent()
+                .filter(|parent| *parent != Path::new(sandbox_xdg_runtime_dir))
+                .map(|parent| parent.to_string_lossy().to_string());
+            return (sandbox_auth_sock, sandbox_parent);
+        }
+    }
+
+    ("/ssh-agent".to_string(), None)
+}
+
+fn ssh_filter_socket_path(host_xdg_runtime_dir: &str, pid: u32) -> String {
+    if host_xdg_runtime_dir.is_empty() {
+        format!("/tmp/cloister-ssh-filter-{pid}/agent.sock")
+    } else {
+        format!("{host_xdg_runtime_dir}/cloister-ssh-filter-{pid}")
+    }
 }
 
 fn build_session_run_cmd(
@@ -2413,9 +2497,11 @@ mod tests {
         );
         let result = validate_xdg_runtime_dir(&config, "");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains(
-            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or SSH features."
-        ));
+        assert!(
+            result.unwrap_err().contains(
+                "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, or audio features."
+            )
+        );
     }
 
     #[test]
@@ -2507,6 +2593,22 @@ mod tests {
         assert_eq!(
             build_session_run_cmd(&config, run_cmd.clone(), false),
             run_cmd
+        );
+    }
+
+    #[test]
+    fn ssh_filter_socket_path_uses_tmp_fallback_without_runtime_dir() {
+        assert_eq!(
+            ssh_filter_socket_path("", 4242),
+            "/tmp/cloister-ssh-filter-4242/agent.sock"
+        );
+    }
+
+    #[test]
+    fn ssh_filter_socket_path_prefers_runtime_dir_when_present() {
+        assert_eq!(
+            ssh_filter_socket_path("/run/user/1000", 4242),
+            "/run/user/1000/cloister-ssh-filter-4242"
         );
     }
 
