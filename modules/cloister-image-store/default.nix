@@ -123,7 +123,6 @@ in
           type = "squashfs";
           options = "loop,ro,nodev,nosuid";
           wantedBy = [ "multi-user.target" ];
-          before = [ "multi-user.target" ];
         }) imageInfos;
 
         services.cloister-image-store-clean = lib.mkIf cfg.enable {

@@ -39,6 +39,8 @@ pkgs.testers.runNixOSTest (_: {
       proxyWrapper = eval.config.systemd.user.services.cloister-dbus-proxy-browser.Service.ExecStart;
     in
     {
+      virtualisation.cores = 2;
+
       environment.systemPackages = with pkgs; [
         dbus
         jq
@@ -53,7 +55,6 @@ pkgs.testers.runNixOSTest (_: {
       systemd.services.cloister-runtime-dbus-fixture = {
         description = "Cloister runtime D-Bus fixture";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network.target" ];
         serviceConfig = {
           Type = "simple";
           User = hmUser;

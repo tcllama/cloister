@@ -211,6 +211,87 @@ let
     };
   };
 
+  isolatedEval = nixos.netns {
+    cloister-netns = {
+      enable = true;
+      networks.offline.isolated = true;
+    };
+  };
+
+  wgAutoHostnameEval = nixos.netns {
+    cloister-netns = {
+      enable = true;
+      networks.vpn = {
+        wireguard = {
+          privateKeyFile = pkgs.writeText "wg-private-key-auto-host" "private\n";
+          address = [ "10.42.0.2/32" ];
+          peers = [
+            {
+              publicKey = "public";
+              endpoint = "vpn.example:51820";
+            }
+          ];
+        };
+      };
+    };
+  };
+
+  wgAutoIpEval = nixos.netns {
+    cloister-netns = {
+      enable = true;
+      networks.vpn = {
+        wireguard = {
+          privateKeyFile = pkgs.writeText "wg-private-key-auto-ip" "private\n";
+          address = [ "10.43.0.2/32" ];
+          peers = [
+            {
+              publicKey = "public";
+              endpoint = "203.0.113.10:51820";
+            }
+          ];
+        };
+      };
+    };
+  };
+
+  wgForcedWaitEval = nixos.netns {
+    cloister-netns = {
+      enable = true;
+      startup.waitForNetworkOnline = true;
+      networks.vpn = {
+        wireguard = {
+          privateKeyFile = pkgs.writeText "wg-private-key-force-wait" "private\n";
+          address = [ "10.44.0.2/32" ];
+          peers = [
+            {
+              publicKey = "public";
+              endpoint = "203.0.113.11:51820";
+            }
+          ];
+        };
+      };
+    };
+  };
+
+  wgForcedNoWaitEval = nixos.netns {
+    cloister-netns = {
+      enable = true;
+      startup.waitForNetworkOnline = false;
+      networks.vpn = {
+        wireguard = {
+          privateKeyFile = pkgs.writeText "wg-private-key-force-no-wait" "private\n";
+          address = [ "10.45.0.2/32" ];
+          peers = [
+            {
+              publicKey = "public";
+              endpoint = "vpn.example:51820";
+            }
+          ];
+        };
+      };
+    };
+  };
+
   duplicateAddressEval = nixos.netns {
     cloister-netns = {
       enable = true;
@@ -316,6 +397,11 @@ let
   fileBackedVpnStart =
     builtins.readFile
       fileBackedServices."cloister-netns-vpn".serviceConfig.ExecStart;
+  isolatedService = isolatedEval.config.systemd.services."cloister-netns-offline";
+  autoHostnameService = wgAutoHostnameEval.config.systemd.services."cloister-netns-vpn";
+  autoIpService = wgAutoIpEval.config.systemd.services."cloister-netns-vpn";
+  forcedWaitService = wgForcedWaitEval.config.systemd.services."cloister-netns-vpn";
+  forcedNoWaitService = wgForcedNoWaitEval.config.systemd.services."cloister-netns-vpn";
   helperDrvAttrs = helperWithCustomExecPaths.drvAttrs or { };
 in
 checks.mkCheck "test-cloister-netns" [
@@ -359,6 +445,28 @@ checks.mkCheck "test-cloister-netns" [
     evalDevStart
   )
   (checks.expectContains "lan applies a generated nft ruleset" "nft -f /nix/store/" evalLanStart)
+  (checks.expectEq "localhost service skips network-online target in auto mode" [ ] (
+    evalServices."cloister-netns-dev".after or [ ]
+  ))
+  (checks.expectEq "lan service skips network-online target in auto mode" [ ] (
+    evalServices."cloister-netns-lan".after or [ ]
+  ))
+  (checks.expectEq "isolated service skips network-online target" [ ] (isolatedService.after or [ ]))
+  (checks.expectEq "wireguard hostname endpoint waits for network-online in auto mode" [
+    "network-online.target"
+  ] (autoHostnameService.after or [ ]))
+  (checks.expectEq "wireguard endpointFile waits for network-online in auto mode" [
+    "network-online.target"
+  ] (fileBackedServices."cloister-netns-vpn".after or [ ]))
+  (checks.expectEq "wireguard literal IP endpoint skips network-online in auto mode" [ ] (
+    autoIpService.after or [ ]
+  ))
+  (checks.expectEq "wireguard explicit wait forces network-online target" [
+    "network-online.target"
+  ] (forcedWaitService.after or [ ]))
+  (checks.expectEq "wireguard explicit no-wait skips network-online target" [ ] (
+    forcedNoWaitService.after or [ ]
+  ))
   (checks.expectEq "custom authorization group is honored" "sandboxers"
     customGroup.config.security.wrappers.cloister-netns.group
   )

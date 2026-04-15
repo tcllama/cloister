@@ -45,6 +45,8 @@ pkgs.testers.runNixOSTest (_: {
   nodes.machine =
     { pkgs, ... }:
     {
+      virtualisation.cores = 2;
+
       environment.systemPackages = [
         pkgs.jq
         pkgs.openssh
@@ -62,7 +64,6 @@ pkgs.testers.runNixOSTest (_: {
       systemd.services.cloister-runtime-sandbox-fixture = {
         description = "Cloister runtime sandbox fixture";
         wantedBy = [ "multi-user.target" ];
-        after = [ "network.target" ];
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;

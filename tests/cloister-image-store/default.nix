@@ -111,6 +111,10 @@ checks.mkCheck "test-cloister-image-store" [
   ))
   (checks.expectEq "image store mount path" "/run/cloister/images/abc123" mount.where)
   (checks.expectEq "image store mount options are hardened" "loop,ro,nodev,nosuid" mount.options)
+  (checks.expectEq "image store mount remains tied to multi-user target" [
+    "multi-user.target"
+  ] mount.wantedBy)
+  (checks.expectEq "image store mount no longer blocks multi-user target" [ ] (mount.before or [ ]))
   (checks.expectEq "cleanup timer calendar" "daily"
     eval.config.systemd.timers.cloister-image-store-clean.timerConfig.OnCalendar
   )

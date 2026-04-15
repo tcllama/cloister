@@ -9,6 +9,55 @@ let
 
   effectiveAllowedNamespaces = cfg.allowedNamespaces ++ lib.attrNames cfg.networks;
 
+  isIpv4Address = value: builtins.match "^([0-9]{1,3}\.){3}[0-9]{1,3}$" value != null;
+
+  isBareIpv6Address =
+    value: lib.hasInfix ":" value && builtins.match "^[0-9A-Fa-f:.]+$" value != null;
+
+  splitWireguardEndpoint =
+    endpoint:
+    let
+      bracketedParts = lib.splitString "]:" endpoint;
+      genericParts = lib.splitString ":" endpoint;
+    in
+    if lib.hasPrefix "[" endpoint && builtins.length bracketedParts == 2 then
+      {
+        host = lib.removePrefix "[" (builtins.elemAt bracketedParts 0);
+        port = builtins.elemAt bracketedParts 1;
+      }
+    else if builtins.length genericParts == 2 then
+      {
+        host = builtins.elemAt genericParts 0;
+        port = builtins.elemAt genericParts 1;
+      }
+    else
+      null;
+
+  endpointNeedsNetworkOnline =
+    peer:
+    if peer.endpointFile != null then
+      true
+    else if peer.endpoint == null then
+      false
+    else
+      let
+        parsed = splitWireguardEndpoint peer.endpoint;
+      in
+      if parsed == null then
+        true
+      else
+        let
+          inherit (parsed) host;
+        in
+        !(isIpv4Address host || isBareIpv6Address host);
+
+  wireguardNeedsNetworkOnline =
+    netCfg:
+    if builtins.isBool cfg.startup.waitForNetworkOnline then
+      cfg.startup.waitForNetworkOnline
+    else
+      builtins.any endpointNeedsNetworkOnline netCfg.wireguard.peers;
+
   cloister-sandbox = pkgs.callPackage ../../helpers/cloister-sandbox { };
   cloister-netns = pkgs.callPackage ../../helpers/cloister-netns {
     allowedNamespaces = effectiveAllowedNamespaces;
@@ -368,11 +417,12 @@ let
         wg.mtu != null
       ) "ip -n ${escapedName} link set ${escapedIfName} mtu ${toString wg.mtu}";
       stopScript = mkNetnsStopScript name "";
+      needsNetworkOnline = wireguardNeedsNetworkOnline netCfg;
     in
     {
       description = "Cloister WireGuard namespace: ${name}";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = lib.optional needsNetworkOnline "network-online.target";
+      wants = lib.optional needsNetworkOnline "network-online.target";
       wantedBy = [ "multi-user.target" ];
       path = [
         pkgs.coreutils
@@ -431,8 +481,6 @@ let
     in
     {
       description = "Cloister ${typeName} namespace: ${name}";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
       path = [
         pkgs.coreutils
@@ -869,6 +917,20 @@ in
       description = ''
         Namespace names expected by sandboxes.
         An assertion verifies each is in networks or allowedNamespaces.
+      '';
+    };
+
+    startup.waitForNetworkOnline = lib.mkOption {
+      type = lib.types.either lib.types.bool (lib.types.enum [ "auto" ]);
+      default = "auto";
+      description = ''
+        Whether WireGuard-backed namespaces should wait for `network-online.target`.
+
+        `true` always waits, `false` never waits, and `"auto"` waits only when a
+        peer endpoint may require name resolution at boot. In `"auto"` mode,
+        literal inline IP endpoints skip the wait while `endpointFile` values are
+        treated conservatively and still wait because the file content is not
+        known during evaluation.
       '';
     };
 

@@ -12,6 +12,8 @@ pkgs.testers.runNixOSTest (_: {
   nodes.machine =
     { pkgs, ... }:
     {
+      virtualisation.cores = 2;
+
       imports = [ ../../modules/cloister-netns ];
 
       users.users.tester = {
@@ -40,7 +42,6 @@ pkgs.testers.runNixOSTest (_: {
 
       systemd.services.localhost-http = {
         description = "HTTP server for cloister-netns runtime test";
-        after = [ "network.target" ];
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "simple";

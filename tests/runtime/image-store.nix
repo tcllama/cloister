@@ -30,6 +30,8 @@ pkgs.testers.runNixOSTest (_: {
   nodes.machine =
     { ... }:
     {
+      virtualisation.cores = 2;
+
       imports = [
         homeManagerCompat
         ../../modules/cloister-image-store
