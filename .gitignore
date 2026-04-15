@@ -7,3 +7,4 @@ target/
 
 # direnv
 .direnv/
+docs/superpowers
