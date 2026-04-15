@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::unistd::pipe2;
@@ -30,11 +30,11 @@ pub fn probe() -> bool {
 pub fn make_keepalive_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let (read_fd, write_fd) =
         pipe2(OFlag::O_CLOEXEC).map_err(|e| io::Error::other(format!("pipe2: {e}")))?;
-    let mut fd_flags = fcntl(read_fd.as_raw_fd(), FcntlArg::F_GETFD)
+    let mut fd_flags = fcntl(&read_fd, FcntlArg::F_GETFD)
         .map(FdFlag::from_bits_truncate)
         .map_err(|e| io::Error::other(format!("fcntl getfd: {e}")))?;
     fd_flags.remove(FdFlag::FD_CLOEXEC);
-    fcntl(read_fd.as_raw_fd(), FcntlArg::F_SETFD(fd_flags))
+    fcntl(&read_fd, FcntlArg::F_SETFD(fd_flags))
         .map_err(|e| io::Error::other(format!("fcntl setfd: {e}")))?;
     Ok((read_fd, write_fd))
 }
@@ -90,13 +90,11 @@ pub fn setup_context(socket_path: &str, engine: &str, app_id: &str) -> io::Resul
 mod tests {
     use super::*;
     use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-    use std::os::fd::AsRawFd;
-
     #[test]
     fn keepalive_pipe_inherits_read_end() {
         let (read_fd, write_fd) = make_keepalive_pipe().expect("pipe");
-        let read_flags = fcntl(read_fd.as_raw_fd(), FcntlArg::F_GETFD).expect("get read flags");
-        let write_flags = fcntl(write_fd.as_raw_fd(), FcntlArg::F_GETFD).expect("get write flags");
+        let read_flags = fcntl(&read_fd, FcntlArg::F_GETFD).expect("get read flags");
+        let write_flags = fcntl(&write_fd, FcntlArg::F_GETFD).expect("get write flags");
         let read_flags = FdFlag::from_bits_truncate(read_flags);
         let write_flags = FdFlag::from_bits_truncate(write_flags);
         assert!(!read_flags.contains(FdFlag::FD_CLOEXEC));

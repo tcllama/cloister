@@ -147,9 +147,9 @@ fn collect_status(
     let timeout_hint = "This usually means the client can reach the PipeWire socket but lacks enough permissions to complete the initial registry sync.";
 
     pw::init();
-    let mainloop = pw::main_loop::MainLoop::new(None)
+    let mainloop = pw::main_loop::MainLoopBox::new(None)
         .map_err(|e| format!("Failed to create mainloop: {e}"))?;
-    let context = pw::context::Context::new(&mainloop)
+    let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .map_err(|e| format!("Failed to create context: {e}"))?;
     let core = context
         .connect(None)

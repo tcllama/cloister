@@ -124,11 +124,11 @@ pub fn build_bwrap_command(
 
     // Clear FD_CLOEXEC on read end so bwrap inherits it
     let raw_read = read_fd.as_raw_fd();
-    let mut flags = fcntl(raw_read, FcntlArg::F_GETFD)
+    let mut flags = fcntl(&read_fd, FcntlArg::F_GETFD)
         .map(FdFlag::from_bits_truncate)
         .map_err(|e| io::Error::other(format!("fcntl getfd: {e}")))?;
     flags.remove(FdFlag::FD_CLOEXEC);
-    fcntl(raw_read, FcntlArg::F_SETFD(flags))
+    fcntl(&read_fd, FcntlArg::F_SETFD(flags))
         .map_err(|e| io::Error::other(format!("fcntl setfd: {e}")))?;
 
     // Serialize arguments as NUL-terminated strings

@@ -18,11 +18,11 @@ pub fn open_seccomp_fd(path: &str) -> io::Result<(File, RawFd)> {
     let fd = file.as_raw_fd();
 
     // Clear FD_CLOEXEC so bwrap can read it
-    let mut flags = fcntl(fd, FcntlArg::F_GETFD)
+    let mut flags = fcntl(&file, FcntlArg::F_GETFD)
         .map(FdFlag::from_bits_truncate)
         .map_err(|e| io::Error::other(format!("fcntl getfd: {e}")))?;
     flags.remove(FdFlag::FD_CLOEXEC);
-    fcntl(fd, FcntlArg::F_SETFD(flags))
+    fcntl(&file, FcntlArg::F_SETFD(flags))
         .map_err(|e| io::Error::other(format!("fcntl setfd: {e}")))?;
 
     Ok((file, fd))
@@ -43,8 +43,8 @@ mod tests {
         let path = dir.join(format!("cloister-seccomp-validate-{}", std::process::id()));
         std::fs::write(&path, b"test").unwrap();
 
-        let (_file, fd) = open_seccomp_fd(path.to_str().unwrap()).unwrap();
-        let flags = fcntl(fd, FcntlArg::F_GETFD)
+        let (_file, _fd) = open_seccomp_fd(path.to_str().unwrap()).unwrap();
+        let flags = fcntl(&_file, FcntlArg::F_GETFD)
             .map(FdFlag::from_bits_truncate)
             .unwrap();
         assert!(!flags.contains(FdFlag::FD_CLOEXEC));
