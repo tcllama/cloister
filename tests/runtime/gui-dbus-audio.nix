@@ -151,6 +151,8 @@ pkgs.testers.runNixOSTest (_: {
     };
 
   testScript = ''
+    ${builtins.readFile ./lib.py}
+
     start_all()
 
     machine.wait_for_unit("cloister-runtime-dbus-fixture.service")
@@ -159,34 +161,26 @@ pkgs.testers.runNixOSTest (_: {
 
     raw_bus = "unix:path=/tmp/cloister-runtime-user/bus"
     proxy_bus = "unix:path=/tmp/cloister-runtime-user/cloister/dbus/browser-runtime-portal"
-
-    machine.wait_until_succeeds(
+    raw_list_cmd = (
         "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + raw_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.example.Service "
-        + "&& ${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + raw_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.example.Secret "
-        + "&& ${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + raw_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.freedesktop.portal.Desktop"
+        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet"
+    )
+    proxy_list_cmd = (
+        "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + proxy_bus + " "
+        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet"
     )
 
-    machine.wait_until_succeeds(
-        "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + proxy_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.example.Service"
-    )
-    machine.wait_until_succeeds(
-        "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + proxy_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.freedesktop.portal.Desktop"
-    )
-    machine.fail(
-        "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + proxy_bus + " "
-        + "${dbusValidate}/bin/cloister-dbus-validate --list --quiet "
-        + "| grep -F org.example.Secret"
-    )
+    def wait_until_contains(command, needle, label):
+        machine.wait_until_succeeds(command)
+        assert_contains(machine, command, needle, label)
+
+    wait_until_contains(raw_list_cmd, "org.example.Service", "raw bus exposes allowed service")
+    assert_contains(machine, raw_list_cmd, "org.example.Secret", "raw bus exposes denied service before proxy")
+    assert_contains(machine, raw_list_cmd, "org.freedesktop.portal.Desktop", "raw bus exposes portal service")
+
+    wait_until_contains(proxy_list_cmd, "org.example.Service", "proxy bus exposes allowed service")
+    wait_until_contains(proxy_list_cmd, "org.freedesktop.portal.Desktop", "proxy bus exposes portal service")
+    assert_not_contains(machine, proxy_list_cmd, "org.example.Secret", "proxy bus hides denied service")
     machine.succeed(
         "${pkgs.util-linux}/bin/runuser -u tester -- env DBUS_SESSION_BUS_ADDRESS=" + proxy_bus + " "
         + "${pkgs.dbus}/bin/dbus-send --session --dest=org.example.Service / org.freedesktop.DBus.Peer.Ping"

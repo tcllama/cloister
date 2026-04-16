@@ -154,6 +154,8 @@ pkgs.testers.runNixOSTest (_: {
     };
 
   testScript = ''
+    ${builtins.readFile ./lib.py}
+
     start_all()
 
     machine.wait_for_unit("cloister-runtime-worker-broker-fixture.service")
@@ -173,7 +175,12 @@ pkgs.testers.runNixOSTest (_: {
         tester_shell
         + "'cd ${projectDir} && rm -f project-rw.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-project-rw'"
     )
-    machine.succeed("grep -Fx 'project-rw' ${projectDir}/project-rw.txt")
+    assert_eq(
+        machine,
+        "cat ${projectDir}/project-rw.txt",
+        "project-rw",
+        "project-rw worker writes visible file content",
+    )
     machine.fail(
         "${pkgs.bash}/bin/bash -lc 'set -- ${runtimeDir}/cloister/broker/sessions/*.json; test -e \"$1\"'"
     )
@@ -182,21 +189,43 @@ pkgs.testers.runNixOSTest (_: {
         tester_shell
         + "'cd ${projectDir} && printf \"%s\\n\" host-original > host.txt && rm -f overlay-only.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-overlay'"
     )
-    machine.succeed("grep -Fx 'host-original' ${projectDir}/host.txt")
+    assert_eq(
+        machine,
+        "cat ${projectDir}/host.txt",
+        "host-original",
+        "overlay worker does not mutate host file",
+    )
     machine.fail("test -e ${projectDir}/overlay-only.txt")
 
-    machine.succeed(
+    assert_failure_contains(
+        machine,
         tester_shell
-        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\"}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write 2>&1 | grep -F \"trusted broker session record mount is unavailable\"'"
+        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\"}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write'",
+        "trusted broker session record mount is unavailable",
+        "forged minimal broker capability is rejected",
     )
-    machine.succeed(
+    forged_payload_output = assert_failure(
+        machine,
         tester_shell
-        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\",\"project_root\":\"${projectDir}\",\"dir_hash\":\"forged\",\"spawnable_profiles\":{},\"available_delegated_per_dir_mounts\":{}}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write 2>&1 | grep -E \"parse CLOISTER_BROKER_PARENT_CAPABILITY|unknown field\"'"
+        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\",\"project_root\":\"${projectDir}\",\"dir_hash\":\"forged\",\"spawnable_profiles\":{},\"available_delegated_per_dir_mounts\":{}}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write'",
+        "forged legacy broker payload is rejected",
     )
+    if "parse CLOISTER_BROKER_PARENT_CAPABILITY" not in forged_payload_output and "unknown field" not in forged_payload_output:
+        raise AssertionError(
+            _format_failure(
+                "forged legacy broker payload is rejected",
+                "forged CLOISTER_BROKER_PARENT_CAPABILITY payload",
+                "output containing 'parse CLOISTER_BROKER_PARENT_CAPABILITY' or 'unknown field'",
+                forged_payload_output,
+            )
+        )
 
-    machine.succeed(
+    assert_failure_contains(
+        machine,
         tester_shell
-        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-same-project 2>&1 | grep -F \"broker project identity does not match\"'"
+        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-same-project'",
+        "broker project identity does not match",
+        "broker rejects mismatched nested project roots",
     )
   '';
 })

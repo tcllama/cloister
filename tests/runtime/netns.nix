@@ -52,6 +52,8 @@ pkgs.testers.runNixOSTest (_: {
     };
 
   testScript = ''
+    ${builtins.readFile ./lib.py}
+
     start_all()
 
     machine.wait_for_unit("cloister-netns-dev.service")
@@ -64,33 +66,54 @@ pkgs.testers.runNixOSTest (_: {
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
         + "'grep -F host.internal /etc/netns/dev/hosts'"
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${pkgs.iproute2}/bin/ip route | grep -F \"default via 172.30.0.1\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${pkgs.iproute2}/bin/ip route'",
+        "default via 172.30.0.1",
+        "dev netns has expected default route",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${pkgs.curl}/bin/curl -fsS http://172.30.0.1:4000/ | grep -F \"hello from host\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${pkgs.curl}/bin/curl -fsS http://172.30.0.1:4000/'",
+        "hello from host",
+        "dev netns can reach host service",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect | grep -F \"NoNewPrivs:\t1\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect'",
+        "NoNewPrivs:\t1",
+        "dev netns enables no-new-privileges",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect | grep -F \"CapInh:\t0000000000000000\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect'",
+        "CapInh:\t0000000000000000",
+        "dev netns clears inheritable capabilities",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect | grep -F \"CapPrm:\t0000000000000000\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect'",
+        "CapPrm:\t0000000000000000",
+        "dev netns clears permitted capabilities",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect | grep -F \"CapEff:\t0000000000000000\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect'",
+        "CapEff:\t0000000000000000",
+        "dev netns clears effective capabilities",
     )
-    machine.succeed(
+    assert_contains(
+        machine,
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "
-        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect | grep -F \"CapAmb:\t0000000000000000\"'"
+        + "'/run/wrappers/bin/cloister-netns --netns dev -- ${inspectNetns}/bin/cloister-netns-inspect'",
+        "CapAmb:\t0000000000000000",
+        "dev netns clears ambient capabilities",
     )
     machine.fail(
         "${pkgs.util-linux}/bin/runuser -u tester -- ${pkgs.runtimeShell} -lc "

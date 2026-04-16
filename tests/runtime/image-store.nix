@@ -55,6 +55,8 @@ pkgs.testers.runNixOSTest (_: {
     };
 
   testScript = ''
+    ${builtins.readFile ./lib.py}
+
     start_all()
 
     machine.wait_for_unit("cloister-image-store-clean.timer")
@@ -62,7 +64,12 @@ pkgs.testers.runNixOSTest (_: {
 
     machine.succeed("test -L /var/lib/cloister/images/abc123.squashfs")
     machine.succeed("test -L /var/lib/cloister/images/abc123.json")
-    machine.succeed("grep -F runtime-image-store /run/cloister/images/abc123/meta.json")
+    assert_contains(
+        machine,
+        "cat /run/cloister/images/abc123/meta.json",
+        "runtime-image-store",
+        "published image metadata contains fixture marker",
+    )
 
     machine.succeed("touch /var/lib/cloister/images/stale.json")
     machine.succeed("mkdir -p /run/cloister/images/stale")

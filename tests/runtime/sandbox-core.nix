@@ -95,6 +95,8 @@ pkgs.testers.runNixOSTest (_: {
     };
 
   testScript = ''
+    ${builtins.readFile ./lib.py}
+
     start_all()
 
     machine.wait_for_unit("cloister-runtime-sandbox-fixture.service")
@@ -107,12 +109,12 @@ pkgs.testers.runNixOSTest (_: {
         + "${pkgs.zsh}/bin/zsh -ic "
     )
 
-    machine.succeed(tester_shell + "'type sandboxalias | grep -F alias'")
-    machine.succeed(tester_shell + "'type greet | grep -F function'")
-    machine.succeed(tester_shell + "'type printenv | grep -F alias'")
-    machine.succeed(tester_shell + "'sandboxalias | grep -Fx dev'")
-    machine.succeed(tester_shell + "'greet | grep -Fx dev'")
-    machine.succeed(tester_shell + "'printenv CLOISTER | grep -Fx dev'")
+    assert_contains(machine, tester_shell + "'type sandboxalias'", "alias", "sandboxalias is rendered as alias")
+    assert_contains(machine, tester_shell + "'type greet'", "function", "greet is rendered as function")
+    assert_contains(machine, tester_shell + "'type printenv'", "alias", "printenv is wrapped as alias")
+    assert_eq(machine, tester_shell + "'sandboxalias'", "dev", "sandboxalias prints sandbox name")
+    assert_eq(machine, tester_shell + "'greet'", "dev", "greet prints sandbox name")
+    assert_eq(machine, tester_shell + "'printenv CLOISTER'", "dev", "CLOISTER env is set")
 
     machine.succeed(
         "${pkgs.util-linux}/bin/runuser -u ${hmUser} -- env HOME=/home/${hmUser} "

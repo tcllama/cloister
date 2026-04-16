@@ -58,6 +58,29 @@ This repo now has a section-oriented Nix test layout designed for local developm
 - `tests/runtime/netns.nix` -> `test-runtime-netns`
 - `helpers/cloister-*` -> `make rust-test` for the changed helper crates
 
+## Runtime Test Assertions
+
+- Use Python assertions in `testScript` for content checks instead of shell pipelines like `machine.succeed("cmd | grep ...")`.
+- Prefer the shared helpers in `tests/runtime/lib.py`: `assert_contains(...)`, `assert_not_contains(...)`, `assert_eq(...)`, and `assert_json_eq(...)`.
+- Keep `machine.fail(...)` for cases where non-zero exit status is the behavior under test.
+
+Instead of:
+
+```python
+machine.succeed("cloister-dbus-validate --list --quiet | grep -F org.example.Service")
+```
+
+Prefer:
+
+```python
+assert_contains(
+    machine,
+    "cloister-dbus-validate --list --quiet",
+    "org.example.Service",
+    "proxy bus exposes allowed service",
+)
+```
+
 ## Concurrency
 
 - `make test` calls a single `nix build` with all eval and runtime checks, so Nix can schedule the full test suite concurrently instead of stepping through `nix flake check` serially.
