@@ -9,14 +9,14 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::Path;
 use std::process::Command;
 
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::unistd::pipe2;
 
-use crate::config::{BindMode, SandboxConfig};
+use crate::config::{BindMode, DelegatedAccessMode, SandboxConfig};
 use crate::vars;
 
 fn anonymized_identity(config: &SandboxConfig) -> io::Result<&str> {
@@ -124,12 +124,7 @@ pub fn build_bwrap_command(
 
     // Clear FD_CLOEXEC on read end so bwrap inherits it
     let raw_read = read_fd.as_raw_fd();
-    let mut flags = fcntl(&read_fd, FcntlArg::F_GETFD)
-        .map(FdFlag::from_bits_truncate)
-        .map_err(|e| io::Error::other(format!("fcntl getfd: {e}")))?;
-    flags.remove(FdFlag::FD_CLOEXEC);
-    fcntl(&read_fd, FcntlArg::F_SETFD(flags))
-        .map_err(|e| io::Error::other(format!("fcntl setfd: {e}")))?;
+    clear_cloexec(&read_fd)?;
 
     // Serialize arguments as NUL-terminated strings
     let mut buf = Vec::new();
@@ -167,6 +162,16 @@ pub fn build_bwrap_command(
     Ok((cmd, read_fd))
 }
 
+pub fn clear_cloexec<F: AsFd>(fd: &F) -> io::Result<()> {
+    let mut flags = fcntl(fd.as_fd(), FcntlArg::F_GETFD)
+        .map(FdFlag::from_bits_truncate)
+        .map_err(|e| io::Error::other(format!("fcntl getfd: {e}")))?;
+    flags.remove(FdFlag::FD_CLOEXEC);
+    fcntl(fd.as_fd(), FcntlArg::F_SETFD(flags))
+        .map_err(|e| io::Error::other(format!("fcntl setfd: {e}")))?;
+    Ok(())
+}
+
 fn netns_etc_fallback_args(config: &SandboxConfig, file_name: &str, dest: &str) -> Vec<String> {
     let Some(ns) = config.network_namespace.as_deref() else {
         return Vec::new();
@@ -176,6 +181,22 @@ fn netns_etc_fallback_args(config: &SandboxConfig, file_name: &str, dest: &str) 
         return Vec::new();
     }
     vec!["--ro-bind".to_string(), dest.to_string(), dest.to_string()]
+}
+
+pub fn project_overlay_args(lower_path: &str, project_path: &str) -> Vec<String> {
+    vec![
+        "--overlay-src".to_string(),
+        lower_path.to_string(),
+        "--tmp-overlay".to_string(),
+        project_path.to_string(),
+    ]
+}
+
+pub fn delegated_per_dir_args(src: &str, dest: &str, mode: DelegatedAccessMode) -> Vec<String> {
+    match mode {
+        DelegatedAccessMode::Ro => vec!["--ro-bind".to_string(), src.to_string(), dest.to_string()],
+        DelegatedAccessMode::Rw => vec!["--bind".to_string(), src.to_string(), dest.to_string()],
+    }
 }
 
 /// Resolve $VAR references in a string using the runtime variable map.
@@ -272,6 +293,35 @@ mod tests {
         assert_eq!(bind_flag(BindMode::Ro, true), "--ro-bind-try");
         assert_eq!(bind_flag(BindMode::Rw, false), "--bind");
         assert_eq!(bind_flag(BindMode::Rw, true), "--bind-try");
+    }
+
+    #[test]
+    fn project_overlay_args_builds_overlay_mount() {
+        assert_eq!(
+            project_overlay_args("/run/cloister/project-lower", "/work/project"),
+            vec![
+                "--overlay-src",
+                "/run/cloister/project-lower",
+                "--tmp-overlay",
+                "/work/project",
+            ]
+        );
+    }
+
+    #[test]
+    fn delegated_per_dir_args_uses_ro_bind_for_read_only() {
+        assert_eq!(
+            delegated_per_dir_args("/src/project", "/dest/project", DelegatedAccessMode::Ro),
+            vec!["--ro-bind", "/src/project", "/dest/project"]
+        );
+    }
+
+    #[test]
+    fn delegated_per_dir_args_uses_bind_for_read_write() {
+        assert_eq!(
+            delegated_per_dir_args("/src/project", "/dest/project", DelegatedAccessMode::Rw),
+            vec!["--bind", "/src/project", "/dest/project"]
+        );
     }
 
     #[test]
@@ -513,6 +563,53 @@ mod tests {
 
         // --chdir should NOT be in the pipe (it stays on the real command line)
         assert!(!pipe_args.contains(&"--chdir"));
+    }
+
+    #[test]
+    fn explicit_overlay_extra_args_do_not_imply_bind_suppression() {
+        let mut config = minimal_config();
+        config.dynamic_binds.push(crate::config::DynamicBind {
+            src: "$SANDBOX_DIR".to_string(),
+            dest: Some("$SANDBOX_DEST".to_string()),
+            mode: crate::config::BindMode::Rw,
+            try_bind: false,
+        });
+
+        let vars = HashMap::from([
+            ("SANDBOX_DIR".to_string(), "/host/project".to_string()),
+            ("SANDBOX_DEST".to_string(), "/workspace/project".to_string()),
+        ]);
+        let run_cmd = vec!["echo".to_string(), "hello".to_string()];
+        let (_cmd, args_fd) = build_bwrap_command(
+            &config,
+            &vars,
+            vec![
+                "--overlay-src".to_string(),
+                "/host/project".to_string(),
+                "--tmp-overlay".to_string(),
+                "/workspace/project".to_string(),
+            ],
+            &run_cmd,
+            "/workspace/project",
+            false,
+        )
+        .expect("build_bwrap_command failed");
+        let pipe_args = read_pipe_args(args_fd);
+
+        assert!(pipe_args.windows(3).any(|w| {
+            w == ["--bind", "/host/project", "/workspace/project"]
+                || w == ["--ro-bind", "/host/project", "/workspace/project"]
+        }));
+        assert!(
+            pipe_args
+                .windows(2)
+                .any(|w| w == ["--overlay-src", "/host/project"])
+        );
+        assert!(
+            pipe_args
+                .windows(2)
+                .any(|w| w == ["--tmp-overlay", "/workspace/project"])
+        );
     }
 
     /// Helper to read NUL-separated args from the pipe returned by `build_bwrap_command`.

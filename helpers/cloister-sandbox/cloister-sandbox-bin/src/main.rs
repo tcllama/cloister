@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io;
+use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -11,8 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use cloister_sandbox_lib::broker;
+use cloister_sandbox_lib::broker_store;
 use cloister_sandbox_lib::bwrap;
-use cloister_sandbox_lib::config::{SandboxConfig, StoreMode};
+use cloister_sandbox_lib::config::{SandboxConfig, StoreMode, WorkspaceMode};
 use cloister_sandbox_lib::env;
 use cloister_sandbox_lib::features;
 use cloister_sandbox_lib::runtime;
@@ -20,6 +23,7 @@ use cloister_sandbox_lib::seccomp;
 use cloister_sandbox_lib::socket;
 use cloister_sandbox_lib::ssh_filter;
 use cloister_sandbox_lib::validate;
+use cloister_sandbox_lib::vars;
 use cloister_sandbox_lib::wayland;
 
 /// PID of the active child process. 0 means no child is running.
@@ -48,6 +52,19 @@ const SIGINT_ESCALATION_WINDOW_SECS: i64 = 2;
 
 /// After forwarding SIGTERM, wait this many seconds before sending SIGKILL.
 const SIGTERM_GRACE_SECS: libc::c_uint = 10;
+const BROKER_PARENT_CAPABILITY_ENV: &str = "CLOISTER_BROKER_PARENT_CAPABILITY";
+const BROKER_CHILD_PROFILE_ENV: &str = "CLOISTER_BROKER_CHILD_PROFILE";
+const BROKER_SESSION_RECORD_CHILD_PATH: &str = "/run/cloister/broker/session.json";
+
+fn broker_parent_capability_token() -> String {
+    let mut bytes = [0_u8; 16];
+    let mut random = std::fs::File::open("/dev/urandom")
+        .expect("open /dev/urandom for broker parent capability token");
+    random
+        .read_exact(&mut bytes)
+        .expect("read broker parent capability token bytes");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 fn forwarded_signal_set() -> libc::sigset_t {
     let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
@@ -280,6 +297,12 @@ struct CleanupState {
     proc_privacy_state: Option<ProcPrivacyState>,
     anonymize_file_paths: Vec<String>,
     flatpak_portal_state: Option<FlatpakPortalState>,
+    broker_session_record_path: Option<std::path::PathBuf>,
+}
+
+struct ParentBrokerLaunchRegistration {
+    env_args: Vec<String>,
+    broker_session_record_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -993,6 +1016,325 @@ fn prepare_run_cmd(
     Ok((run_cmd, is_interactive))
 }
 
+pub fn create_parent_broker_session(
+    config: &SandboxConfig,
+    project_root: &str,
+    dir_hash: &str,
+) -> Result<Option<broker::BrokerSession>, String> {
+    if !config.worker_broker.enable {
+        return Ok(None);
+    }
+
+    if project_root.is_empty() || dir_hash.is_empty() {
+        return Err(
+            "worker broker session requires a non-empty project root and dir hash".to_string(),
+        );
+    }
+
+    let child_visible_project_root = if config.anonymize {
+        runtime::remap_path_for_anonymize(
+            project_root,
+            &config.home_directory,
+            &config.sandbox_home,
+        )
+    } else {
+        project_root.to_string()
+    };
+
+    Ok(Some(broker::BrokerSession {
+        token: broker_parent_capability_token(),
+        project_root: child_visible_project_root,
+        dir_hash: dir_hash.to_string(),
+        spawnable_profiles: config
+            .worker_broker
+            .spawnable_profiles
+            .iter()
+            .map(|(name, profile)| {
+                (
+                    name.clone(),
+                    broker::BrokerSpawnableProfile {
+                        sandbox: profile.sandbox.clone(),
+                        workspace_mode: profile.workspace.mode,
+                        delegated_per_dir_mounts: profile.delegated_per_dir_mounts.clone(),
+                    },
+                )
+            })
+            .collect(),
+        available_delegated_per_dir_mounts: config
+            .worker_broker
+            .available_delegated_per_dir_mounts
+            .iter()
+            .map(|(name, mount)| {
+                (
+                    name.clone(),
+                    broker::BrokerDelegatedPerDirMount {
+                        path: mount.path.clone(),
+                        sub_path: mount.sub_path.clone(),
+                    },
+                )
+            })
+            .collect(),
+    }))
+}
+
+pub fn parent_broker_env_args(session: &broker::BrokerSession) -> Result<Vec<String>, String> {
+    let payload = serde_json::to_string(&broker::BrokerParentCapability::from(session))
+        .map_err(|e| format!("serialize parent broker capability: {e}"))?;
+    Ok(vec![
+        "--setenv".to_string(),
+        BROKER_PARENT_CAPABILITY_ENV.to_string(),
+        payload,
+    ])
+}
+
+fn register_parent_broker_launch(
+    config: &SandboxConfig,
+    project_root: &str,
+    dir_hash: &str,
+    host_runtime_dir: &str,
+) -> Result<Option<ParentBrokerLaunchRegistration>, String> {
+    let Some(session) = create_parent_broker_session(config, project_root, dir_hash)? else {
+        return Ok(None);
+    };
+
+    if host_runtime_dir.is_empty() {
+        return Err("worker broker parent launch requires XDG_RUNTIME_DIR".to_string());
+    }
+
+    let store = broker_store::session_store_dir(host_runtime_dir);
+    broker_store::write_session_record(&store, &session)?;
+    let record_path = store.join(format!("{}.json", session.token));
+
+    let mut args = vec![
+        "--ro-bind".to_string(),
+        record_path.to_string_lossy().to_string(),
+        BROKER_SESSION_RECORD_CHILD_PATH.to_string(),
+    ];
+    args.extend(parent_broker_env_args(&session)?);
+    Ok(Some(ParentBrokerLaunchRegistration {
+        env_args: args,
+        broker_session_record_path: Some(record_path),
+    }))
+}
+
+fn child_broker_record_path_with_override(
+    trusted_record_override: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let trusted_record = trusted_record_override
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from(BROKER_SESSION_RECORD_CHILD_PATH));
+
+    if trusted_record.is_file() {
+        Ok(trusted_record)
+    } else {
+        Err("trusted broker session record mount is unavailable".to_string())
+    }
+}
+
+pub fn lookup_child_profile<'a>(
+    session: &'a broker::BrokerSession,
+    profile_name: &str,
+) -> Result<&'a broker::BrokerSpawnableProfile, String> {
+    session
+        .spawnable_profiles
+        .get(profile_name)
+        .ok_or_else(|| format!("undefined child profile '{profile_name}'"))
+}
+
+pub fn workspace_mode_args(
+    profile: &broker::BrokerSpawnableProfile,
+    project_root: &str,
+    overlay_lower_source: Option<&str>,
+) -> Vec<String> {
+    match profile.workspace_mode {
+        WorkspaceMode::ProjectRw => Vec::new(),
+        WorkspaceMode::ProjectOverlay => bwrap::project_overlay_args(
+            overlay_lower_source.expect("project-overlay requires overlay lower source"),
+            project_root,
+        ),
+    }
+}
+
+pub fn delegated_mount_args(
+    session: &broker::BrokerSession,
+    profile: &broker::BrokerSpawnableProfile,
+    project_root: &str,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    for (dest, mode) in &profile.delegated_per_dir_mounts {
+        let mount = session
+            .available_delegated_per_dir_mounts
+            .get(dest)
+            .ok_or_else(|| format!("undefined delegated per-dir mount '{dest}'"))?;
+        let source = broker::resolve_delegated_per_dir_source(
+            &mount.path,
+            &session.dir_hash,
+            mount.sub_path.as_deref(),
+        )?;
+        let dest_path = format!("{project_root}/{dest}");
+        args.extend(bwrap::delegated_per_dir_args(&source, &dest_path, *mode));
+    }
+    Ok(args)
+}
+
+fn load_parent_broker_capability() -> Result<Option<broker::BrokerParentCapability>, String> {
+    let Some(payload) = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV) else {
+        return Ok(None);
+    };
+    let payload = payload
+        .into_string()
+        .map_err(|_| format!("{BROKER_PARENT_CAPABILITY_ENV} must be valid UTF-8"))?;
+    let capability: broker::BrokerParentCapability = serde_json::from_str(&payload)
+        .map_err(|e| format!("parse {BROKER_PARENT_CAPABILITY_ENV}: {e}"))?;
+    if capability.token.is_empty() {
+        return Err("broker parent capability token must not be empty".to_string());
+    }
+    Ok(Some(capability))
+}
+
+fn child_broker_args(
+    sandbox_name: &str,
+    host_project_root: &str,
+    child_project_root: &str,
+    host_runtime_dir: &str,
+    trusted_record_override: Option<&std::path::Path>,
+    overlay_lower_source: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    child_broker_args_with_store_dir(
+        sandbox_name,
+        host_project_root,
+        child_project_root,
+        host_runtime_dir,
+        trusted_record_override,
+        overlay_lower_source,
+    )
+}
+
+fn child_broker_args_with_store_dir(
+    sandbox_name: &str,
+    host_project_root: &str,
+    child_project_root: &str,
+    _host_runtime_dir: &str,
+    trusted_record_override: Option<&std::path::Path>,
+    overlay_lower_source: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(capability) = load_parent_broker_capability()? else {
+        return Ok(None);
+    };
+    let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
+        return Ok(None);
+    };
+    let profile_name = profile_name
+        .into_string()
+        .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?;
+
+    let record_path = child_broker_record_path_with_override(trusted_record_override)?;
+    let store = record_path.parent().ok_or_else(|| {
+        format!(
+            "session record path has no parent directory: {}",
+            record_path.display()
+        )
+    })?;
+    let token = record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "session record path has invalid token filename: {}",
+                record_path.display()
+            )
+        })?;
+    let session = broker_store::load_session_record(store, token)?;
+    broker::validate_capability_session_identity(&capability, &session, host_project_root)?;
+
+    let profile = lookup_child_profile(&session, &profile_name)?;
+    if profile.sandbox != sandbox_name {
+        return Err(format!(
+            "broker child profile '{profile_name}' targets sandbox '{}' but current sandbox is '{}'",
+            profile.sandbox, sandbox_name
+        ));
+    }
+
+    let mut args = workspace_mode_args(profile, child_project_root, overlay_lower_source);
+    args.extend(delegated_mount_args(&session, profile, child_project_root)?);
+    Ok(Some(args))
+}
+
+fn load_trusted_child_profile(
+    host_project_root: &str,
+    trusted_record_override: Option<&std::path::Path>,
+) -> Result<Option<broker::BrokerSpawnableProfile>, String> {
+    let Some(capability) = load_parent_broker_capability()? else {
+        return Ok(None);
+    };
+    let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
+        return Ok(None);
+    };
+    let profile_name = profile_name
+        .into_string()
+        .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?;
+    let record_path = child_broker_record_path_with_override(trusted_record_override)?;
+    let store = record_path.parent().ok_or_else(|| {
+        format!(
+            "session record path has no parent directory: {}",
+            record_path.display()
+        )
+    })?;
+    let token = record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "session record path has invalid token filename: {}",
+                record_path.display()
+            )
+        })?;
+    let session = broker_store::load_session_record(store, token)?;
+    broker::validate_capability_session_identity(&capability, &session, host_project_root)?;
+
+    Ok(Some(lookup_child_profile(&session, &profile_name)?.clone()))
+}
+
+fn dir_hash_for_launch(config: &SandboxConfig, sandbox_dir: &str) -> String {
+    if !sandbox_dir.is_empty() && (!config.per_dir.is_empty() || config.worker_broker.enable) {
+        runtime::compute_dir_hash(sandbox_dir)
+    } else {
+        String::new()
+    }
+}
+
+fn filter_child_overlay_project_bind(
+    dynamic_binds: &[cloister_sandbox_lib::config::DynamicBind],
+    runtime_vars: &std::collections::HashMap<String, String>,
+    profile: Option<&broker::BrokerSpawnableProfile>,
+) -> Vec<cloister_sandbox_lib::config::DynamicBind> {
+    let Some(profile) = profile else {
+        return dynamic_binds.to_vec();
+    };
+    if profile.workspace_mode != WorkspaceMode::ProjectOverlay {
+        return dynamic_binds.to_vec();
+    }
+
+    let project_dest = runtime_vars
+        .get("SANDBOX_DEST")
+        .cloned()
+        .unwrap_or_else(|| runtime_vars.get("SANDBOX_DIR").cloned().unwrap_or_default());
+
+    dynamic_binds
+        .iter()
+        .filter(|bind| {
+            let src = vars::expand_vars(&bind.src, runtime_vars);
+            let dest = bind
+                .dest
+                .as_ref()
+                .map(|d| vars::expand_vars(d, runtime_vars))
+                .unwrap_or_else(|| src.clone());
+            dest != project_dest
+        })
+        .cloned()
+        .collect()
+}
+
 fn run() -> i32 {
     // --- 1. Parse CLI args ---
     let args: Vec<String> = std::env::args().collect();
@@ -1120,8 +1462,10 @@ fn run() -> i32 {
         };
 
         // --- 7. Per-dir setup ---
-        let dir_hash = if !config.per_dir.is_empty() {
-            let hash = runtime::compute_dir_hash(&sandbox_dir);
+        let dir_hash = dir_hash_for_launch(&config, &sandbox_dir);
+
+        if !config.per_dir.is_empty() {
+            let hash = dir_hash.clone();
 
             for (base, paths) in &config.per_dir {
                 if let Err(e) = runtime::validate_per_dir_base(base) {
@@ -1144,11 +1488,7 @@ fn run() -> i32 {
                     process::exit(1);
                 }
             }
-
-            hash
-        } else {
-            String::new()
-        };
+        }
 
         (sandbox_dir, sandbox_dest, dir_hash, effective_start_dir)
     } else {
@@ -1293,6 +1633,57 @@ fn run() -> i32 {
     };
 
     let mut extra_args = Vec::new();
+    let mut config_dynamic_binds = config.dynamic_binds.clone();
+    let broker_parent_capability_present = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV).is_some();
+    let broker_profile_present = std::env::var_os(BROKER_CHILD_PROFILE_ENV).is_some();
+    if broker_profile_present {
+        match child_broker_args(
+            &config.name,
+            &sandbox_dir,
+            &sandbox_dest,
+            &host_xdg_runtime_dir,
+            None,
+            Some(&sandbox_dir),
+        ) {
+            Ok(Some(args)) => {
+                let profile = load_trusted_child_profile(&sandbox_dir, None)
+                    .ok()
+                    .flatten();
+                config_dynamic_binds = filter_child_overlay_project_bind(
+                    &config.dynamic_binds,
+                    &runtime_vars,
+                    profile.as_ref(),
+                );
+                extra_args.extend(args)
+            }
+            Err(e) => {
+                eprintln!("{prefix}: {e}");
+                process::exit(1);
+            }
+            Ok(None) => {
+                eprintln!("{prefix}: broker child launch requires {BROKER_PARENT_CAPABILITY_ENV}");
+                process::exit(1);
+            }
+        }
+    } else if broker_parent_capability_present {
+        // Parent capabilities propagate through nested launches but stay inert until a child profile is selected.
+    }
+
+    let broker_registration = match register_parent_broker_launch(
+        &config,
+        &sandbox_dir,
+        &dir_hash,
+        &host_xdg_runtime_dir,
+    ) {
+        Ok(registration) => registration,
+        Err(e) => {
+            eprintln!("{prefix}: {e}");
+            process::exit(1);
+        }
+    };
+    if let Some(registration) = broker_registration.as_ref() {
+        extra_args.extend(registration.env_args.clone());
+    }
 
     match config.store_mode {
         StoreMode::Host => extra_args.extend(host_store_bind_args()),
@@ -1302,6 +1693,10 @@ fn run() -> i32 {
             }
         }
     }
+
+    let broker_session_record_path = broker_registration
+        .as_ref()
+        .and_then(|registration| registration.broker_session_record_path.clone());
 
     // Passthrough env
     extra_args.extend(bwrap::passthrough_env_args(&config.passthrough_env));
@@ -1450,7 +1845,17 @@ fn run() -> i32 {
                 let wayland_dir = format!("{host_xdg_runtime_dir}/cloister/wayland");
                 if let Err(e) = std::fs::create_dir_all(&wayland_dir) {
                     eprintln!("{prefix}: wayland runtime dir: {e}");
-                    process::exit(1);
+                    process::exit(cleanup_and_exit(CleanupState {
+                        ssh_handle: ssh_filter_handle,
+                        dbus_proxy: None,
+                        pulse_bridge,
+                        wayland_socket: None,
+                        machine_id_path: None,
+                        proc_privacy_state: None,
+                        anonymize_file_paths: Vec::new(),
+                        flatpak_portal_state,
+                        broker_session_record_path,
+                    }));
                 }
                 let socket = format!("{wayland_dir}/{}", process::id());
                 if !wayland::probe() {
@@ -1461,7 +1866,17 @@ fn run() -> i32 {
                     eprintln!(
                         "or set gui.wayland.securityContext.enable = false for raw socket passthrough."
                     );
-                    process::exit(1);
+                    process::exit(cleanup_and_exit(CleanupState {
+                        ssh_handle: ssh_filter_handle,
+                        dbus_proxy: None,
+                        pulse_bridge,
+                        wayland_socket: None,
+                        machine_id_path: None,
+                        proc_privacy_state: None,
+                        anonymize_file_paths: Vec::new(),
+                        flatpak_portal_state,
+                        broker_session_record_path,
+                    }));
                 }
                 let app_id = format!("cloister-{}", config.name);
                 match wayland::setup_context(&socket, "cloister", &app_id) {
@@ -1479,7 +1894,17 @@ fn run() -> i32 {
                     }
                     Err(e) => {
                         eprintln!("{prefix}: wayland setup: {e}");
-                        process::exit(1);
+                        process::exit(cleanup_and_exit(CleanupState {
+                            ssh_handle: ssh_filter_handle,
+                            dbus_proxy: None,
+                            pulse_bridge,
+                            wayland_socket: None,
+                            machine_id_path: None,
+                            proc_privacy_state: None,
+                            anonymize_file_paths: Vec::new(),
+                            flatpak_portal_state,
+                            broker_session_record_path,
+                        }));
                     }
                 }
             } else {
@@ -1539,7 +1964,17 @@ fn run() -> i32 {
             Ok(identity) => identity,
             Err(e) => {
                 eprintln!("{prefix}: {e}");
-                process::exit(1);
+                process::exit(cleanup_and_exit(CleanupState {
+                    ssh_handle: ssh_filter_handle,
+                    dbus_proxy: None,
+                    pulse_bridge,
+                    wayland_socket: wayland_socket_path,
+                    machine_id_path: None,
+                    proc_privacy_state: None,
+                    anonymize_file_paths: Vec::new(),
+                    flatpak_portal_state,
+                    broker_session_record_path,
+                }));
             }
         };
         let overlays = features::anonymize_identity_args(
@@ -1579,7 +2014,17 @@ fn run() -> i32 {
                 }
                 Err(e) => {
                     eprintln!("{prefix}: seccomp filter open: {e}");
-                    process::exit(1);
+                    process::exit(cleanup_and_exit(CleanupState {
+                        ssh_handle: ssh_filter_handle,
+                        dbus_proxy: None,
+                        pulse_bridge,
+                        wayland_socket: wayland_socket_path,
+                        machine_id_path,
+                        proc_privacy_state,
+                        anonymize_file_paths,
+                        flatpak_portal_state,
+                        broker_session_record_path,
+                    }));
                 }
             }
         } else {
@@ -1625,6 +2070,7 @@ fn run() -> i32 {
                             proc_privacy_state,
                             anonymize_file_paths,
                             flatpak_portal_state,
+                            broker_session_record_path,
                         });
                         process::exit(1);
                     }
@@ -1643,6 +2089,7 @@ fn run() -> i32 {
                         proc_privacy_state,
                         anonymize_file_paths,
                         flatpak_portal_state,
+                        broker_session_record_path,
                     });
                     process::exit(1);
                 }
@@ -1677,7 +2124,20 @@ fn run() -> i32 {
         Ok(result) => result,
         Err(e) => {
             eprintln!("{prefix}: {e}");
-            process::exit(2);
+            process::exit(cleanup_and_return_exit_code(
+                CleanupState {
+                    ssh_handle: ssh_filter_handle,
+                    dbus_proxy,
+                    pulse_bridge,
+                    wayland_socket: wayland_socket_path,
+                    machine_id_path,
+                    proc_privacy_state,
+                    anonymize_file_paths,
+                    flatpak_portal_state,
+                    broker_session_record_path,
+                },
+                2,
+            ));
         }
     };
 
@@ -1685,8 +2145,13 @@ fn run() -> i32 {
     let run_cmd = build_session_run_cmd(&config, run_cmd, is_interactive);
     INTERACTIVE_MODE.store(is_interactive, Ordering::Release);
 
+    let config_for_bwrap = SandboxConfig {
+        dynamic_binds: config_dynamic_binds,
+        ..config
+    };
+
     let (mut cmd, _args_fd) = match bwrap::build_bwrap_command(
-        &config,
+        &config_for_bwrap,
         &runtime_vars,
         extra_args,
         &run_cmd,
@@ -1705,6 +2170,7 @@ fn run() -> i32 {
                 proc_privacy_state,
                 anonymize_file_paths,
                 flatpak_portal_state,
+                broker_session_record_path,
             });
             process::exit(1);
         }
@@ -1723,6 +2189,7 @@ fn run() -> i32 {
                 proc_privacy_state,
                 anonymize_file_paths,
                 flatpak_portal_state,
+                broker_session_record_path,
             });
             return 127;
         }
@@ -1738,6 +2205,7 @@ fn run() -> i32 {
         proc_privacy_state,
         anonymize_file_paths,
         flatpak_portal_state,
+        broker_session_record_path,
     });
 
     // --- 13. Exit with bwrap's exit code ---
@@ -1784,6 +2252,7 @@ fn cleanup(state: CleanupState) {
         proc_privacy_state,
         anonymize_file_paths,
         flatpak_portal_state,
+        broker_session_record_path,
     } = state;
     // SSH filter cleanup (SshFilterHandle::drop handles this)
     drop(ssh_handle);
@@ -1829,6 +2298,39 @@ fn cleanup(state: CleanupState) {
         let _ = runtime::remove_path_if_exists(&state.flatpak_info_path);
         let _ = runtime::remove_path_if_exists(&state.instance_dir);
     }
+
+    if let Some(path) = broker_session_record_path {
+        let removal = (|| {
+            let base = path.parent().ok_or_else(|| {
+                format!(
+                    "session record path has no parent directory: {}",
+                    path.display()
+                )
+            })?;
+            let token = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    format!(
+                        "session record path has invalid token filename: {}",
+                        path.display()
+                    )
+                })?;
+            broker_store::remove_session_record(base, token)
+        })();
+        if let Err(e) = removal {
+            eprintln!("cleanup: {e}");
+        }
+    }
+}
+
+fn cleanup_and_return_exit_code(state: CleanupState, exit_code: i32) -> i32 {
+    cleanup(state);
+    exit_code
+}
+
+fn cleanup_and_exit(state: CleanupState) -> i32 {
+    cleanup_and_return_exit_code(state, 1)
 }
 
 fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
@@ -1837,6 +2339,7 @@ fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
         || config.pulseaudio_socket_name.is_some()
         || config.pipewire_pulse_config_path.is_some()
         || config.pipewire_socket_name.is_some()
+        || config.worker_broker.enable
 }
 
 fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
@@ -1947,13 +2450,21 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use cloister_sandbox_lib::config::DelegatedAccessMode;
+
     /// Serialize tests that touch shared signal statics (CHILD_PID, SIGINT_COUNT, etc.).
     fn signal_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -2001,6 +2512,1497 @@ mod tests {
             "ssh_enable": ssh_enable
         }))
         .expect("valid config")
+    }
+
+    fn broker_session_fixture() -> broker::BrokerSession {
+        broker::BrokerSession {
+            token: "token-1".to_string(),
+            project_root: "/workspace/project".to_string(),
+            dir_hash: "abc123def456".to_string(),
+            spawnable_profiles: BTreeMap::from([
+                (
+                    "overlay".to_string(),
+                    broker::BrokerSpawnableProfile {
+                        sandbox: "worker".to_string(),
+                        workspace_mode: WorkspaceMode::ProjectOverlay,
+                        delegated_per_dir_mounts: BTreeMap::from([
+                            ("worktrees".to_string(), DelegatedAccessMode::Rw),
+                            (".cache/pre-commit".to_string(), DelegatedAccessMode::Ro),
+                        ]),
+                    },
+                ),
+                (
+                    "project".to_string(),
+                    broker::BrokerSpawnableProfile {
+                        sandbox: "worker".to_string(),
+                        workspace_mode: WorkspaceMode::ProjectRw,
+                        delegated_per_dir_mounts: BTreeMap::new(),
+                    },
+                ),
+            ]),
+            available_delegated_per_dir_mounts: BTreeMap::from([
+                (
+                    "worktrees".to_string(),
+                    broker::BrokerDelegatedPerDirMount {
+                        path: "/local/worktrees/dev".to_string(),
+                        sub_path: None,
+                    },
+                ),
+                (
+                    ".cache/pre-commit".to_string(),
+                    broker::BrokerDelegatedPerDirMount {
+                        path: "/local/ephemeral/dev".to_string(),
+                        sub_path: Some(".cache/pre-commit".to_string()),
+                    },
+                ),
+            ]),
+        }
+    }
+
+    fn config_with_worker_broker() -> SandboxConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": "dev",
+            "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
+            "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
+            "shell_interactive_args": ["-i"],
+            "shell_name": "zsh",
+            "home_directory": "/home/user",
+            "sandbox_home": "/home/user",
+            "store_mode": "host",
+            "store_roots": ["/nix/store/aaa-shell"],
+            "per_dir": {},
+            "copy_file_base": "/home/user/.local/state/cloister",
+            "git_path": "/nix/store/xxx-git/bin/git",
+            "worker_broker": {
+                "enable": true,
+                "spawnable_profiles": {
+                    "overlay": {
+                        "sandbox": "worker",
+                        "workspace": {
+                            "mode": "project-overlay"
+                        },
+                        "delegated_per_dir_mounts": {
+                            "worktrees": "rw",
+                            ".cache/pre-commit": "ro"
+                        }
+                    },
+                    "project": {
+                        "sandbox": "worker",
+                        "workspace": {
+                            "mode": "project-rw"
+                        }
+                    }
+                },
+                "available_delegated_per_dir_mounts": {
+                    "worktrees": {
+                        "path": "/local/worktrees/dev",
+                        "sub_path": null
+                    },
+                    ".cache/pre-commit": {
+                        "path": "/local/ephemeral/dev",
+                        "sub_path": ".cache/pre-commit"
+                    }
+                }
+            }
+        }))
+        .expect("valid worker broker config")
+    }
+
+    fn env_lock_guard() -> std::sync::MutexGuard<'static, ()> {
+        env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn broker_child_profile_lookup_rejects_unknown_profile() {
+        let session = broker_session_fixture();
+
+        let err = lookup_child_profile(&session, "missing").unwrap_err();
+        assert!(err.contains("undefined child profile 'missing'"));
+    }
+
+    #[test]
+    fn broker_workspace_mode_selects_overlay_mounts() {
+        let session = broker_session_fixture();
+        let profile = lookup_child_profile(&session, "overlay").unwrap();
+
+        assert_eq!(
+            workspace_mode_args(profile, &session.project_root, Some("/workspace/project")),
+            vec![
+                "--overlay-src",
+                "/workspace/project",
+                "--tmp-overlay",
+                "/workspace/project",
+            ]
+        );
+    }
+
+    #[test]
+    fn broker_workspace_mode_skips_extra_args_for_project_rw() {
+        let session = broker_session_fixture();
+        let profile = lookup_child_profile(&session, "project").unwrap();
+
+        assert!(workspace_mode_args(profile, &session.project_root, None).is_empty());
+    }
+
+    #[test]
+    fn broker_delegated_mount_args_use_stored_session_config() {
+        let session = broker_session_fixture();
+        let profile = lookup_child_profile(&session, "overlay").unwrap();
+
+        assert_eq!(
+            delegated_mount_args(&session, profile, &session.project_root).unwrap(),
+            vec![
+                "--ro-bind",
+                "/local/ephemeral/dev/abc123def456/.cache/pre-commit",
+                "/workspace/project/.cache/pre-commit",
+                "--bind",
+                "/local/worktrees/dev/abc123def456",
+                "/workspace/project/worktrees",
+            ]
+        );
+    }
+
+    #[test]
+    fn parent_broker_session_captures_current_project_root_and_capabilities() {
+        let config = config_with_worker_broker();
+
+        let session = create_parent_broker_session(&config, "/workspace/project", "abc123def456")
+            .unwrap()
+            .expect("parent session");
+
+        assert_eq!(session.project_root, "/workspace/project");
+        assert_eq!(session.dir_hash, "abc123def456");
+        assert_eq!(
+            lookup_child_profile(&session, "overlay")
+                .unwrap()
+                .workspace_mode,
+            WorkspaceMode::ProjectOverlay
+        );
+        assert_eq!(
+            session
+                .available_delegated_per_dir_mounts
+                .get(".cache/pre-commit")
+                .and_then(|mount| mount.sub_path.as_deref()),
+            Some(".cache/pre-commit")
+        );
+        assert!(!session.token.is_empty());
+    }
+
+    #[test]
+    fn parent_broker_session_uses_child_visible_project_root_under_anonymization() {
+        let mut config = config_with_worker_broker();
+        config.anonymize = true;
+        config.home_directory = "/home/alice".to_string();
+        config.sandbox_home = "/home/ubuntu".to_string();
+
+        let session =
+            create_parent_broker_session(&config, "/home/alice/src/project", "abc123def456")
+                .unwrap()
+                .expect("parent session");
+
+        assert_eq!(session.project_root, "/home/ubuntu/src/project");
+    }
+
+    #[test]
+    fn parent_broker_session_generates_opaque_per_launch_token() {
+        let config = config_with_worker_broker();
+
+        let first = create_parent_broker_session(&config, "/workspace/project", "abc123def456")
+            .unwrap()
+            .expect("first parent session");
+        let second = create_parent_broker_session(&config, "/workspace/project", "abc123def456")
+            .unwrap()
+            .expect("second parent session");
+
+        assert_ne!(first.token, second.token);
+        assert!(!first.token.contains("/workspace/project"));
+        assert!(!first.token.contains("abc123def456"));
+        assert_eq!(first.token.len(), 32);
+        assert!(first.token.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parent_broker_capability_env_args_export_serialized_capability() {
+        let session = broker_session_fixture();
+
+        let args = parent_broker_env_args(&session).unwrap();
+        let payload = args
+            .windows(3)
+            .find(|window| {
+                window[0] == "--setenv" && window[1] == "CLOISTER_BROKER_PARENT_CAPABILITY"
+            })
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let restored: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(restored.token, session.token);
+        assert!(args.windows(2).all(|window| {
+            !(window[0] == "--setenv" && window[1] == "CLOISTER_BROKER_SESSION")
+        }));
+    }
+
+    #[test]
+    fn parent_broker_capability_env_args_do_not_embed_session_policy() {
+        let session = broker_session_fixture();
+
+        let args = parent_broker_env_args(&session).unwrap();
+        let payload = args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let payload_json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert!(payload_json.get("token").is_some());
+        assert_eq!(payload_json.as_object().map(|value| value.len()), Some(1));
+        assert!(payload_json.get("project_root").is_none());
+        assert!(payload_json.get("dir_hash").is_none());
+        assert!(payload_json.get("spawnable_profiles").is_none());
+        assert!(
+            payload_json
+                .get("available_delegated_per_dir_mounts")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn register_parent_broker_launch_writes_session_record_to_host_runtime_store() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("register-parent");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let env_args = registration.env_args;
+
+        let payload = env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let capability: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+        let record_path = host_runtime_dir
+            .join("cloister")
+            .join("broker")
+            .join("sessions")
+            .join(format!("{}.json", capability.token));
+
+        assert!(
+            record_path.is_file(),
+            "missing session record: {}",
+            record_path.display()
+        );
+
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        assert_eq!(
+            record.get("token").and_then(|value| value.as_str()),
+            Some(capability.token.as_str())
+        );
+        assert_eq!(
+            record.get("project_root").and_then(|value| value.as_str()),
+            Some("/workspace/project")
+        );
+        assert_eq!(
+            record.get("dir_hash").and_then(|value| value.as_str()),
+            Some("abc123def456")
+        );
+        assert!(record.get("spawnable_profiles").is_some());
+        assert!(record.get("available_delegated_per_dir_mounts").is_some());
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn register_parent_broker_launch_exports_only_opaque_capability() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("register-capability");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let env_args = registration.env_args;
+
+        let payload = env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let payload_json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert!(payload_json.get("token").is_some());
+        assert_eq!(payload_json.as_object().map(|value| value.len()), Some(1));
+        assert!(payload_json.get("project_root").is_none());
+        assert!(payload_json.get("dir_hash").is_none());
+        assert!(payload_json.get("spawnable_profiles").is_none());
+        assert!(
+            payload_json
+                .get("available_delegated_per_dir_mounts")
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn parent_broker_session_exports_with_empty_per_dir_when_worker_broker_enabled() {
+        let config = config_with_worker_broker();
+
+        let session = create_parent_broker_session(&config, "/workspace/project", "abc123def456")
+            .unwrap()
+            .expect("parent session");
+
+        assert_eq!(session.dir_hash, "abc123def456");
+        assert_eq!(session.project_root, "/workspace/project");
+    }
+
+    #[test]
+    fn parent_broker_session_rejects_missing_dir_hash_when_enabled() {
+        let config = config_with_worker_broker();
+
+        let err = create_parent_broker_session(&config, "/workspace/project", "").unwrap_err();
+
+        assert!(err.contains("non-empty project root and dir hash"));
+    }
+
+    #[test]
+    fn apply_child_broker_profile_loads_session_policy_from_trusted_record_mount() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-load-session").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        assert!(
+            child_broker_args_with_store_dir(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/workspace/project")
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn register_parent_broker_launch_exports_child_visible_session_record_path() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("register-broker-store-path");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let env_args = registration.env_args;
+
+        let payload = env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let capability: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+
+        assert!(env_args.windows(3).any(|window| {
+            window[0] == "--ro-bind"
+                && window[1]
+                    == broker_store::session_store_dir(host_runtime_dir.to_str().unwrap())
+                        .join(format!("{}.json", capability.token))
+                        .to_string_lossy()
+                && window[2] == "/run/cloister/broker/session.json"
+        }));
+        assert!(
+            !env_args
+                .iter()
+                .any(|arg| arg == "CLOISTER_BROKER_SESSION_STORE")
+        );
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn cleanup_removes_registered_parent_broker_session_record() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("cleanup-parent-record");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let payload = registration
+            .env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let capability: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+        let record_path = host_runtime_dir
+            .join("cloister")
+            .join("broker")
+            .join("sessions")
+            .join(format!("{}.json", capability.token));
+
+        assert!(
+            record_path.is_file(),
+            "session record should exist before cleanup"
+        );
+
+        cleanup(CleanupState {
+            ssh_handle: None,
+            dbus_proxy: None,
+            pulse_bridge: None,
+            wayland_socket: None,
+            machine_id_path: None,
+            proc_privacy_state: None,
+            anonymize_file_paths: Vec::new(),
+            flatpak_portal_state: None,
+            broker_session_record_path: registration.broker_session_record_path,
+        });
+
+        assert!(
+            !record_path.exists(),
+            "session record should be removed during cleanup"
+        );
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn cleanup_and_exit_removes_registered_parent_broker_session_record() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("cleanup-parent-record-exit");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let payload = registration
+            .env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let capability: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+        let record_path = host_runtime_dir
+            .join("cloister")
+            .join("broker")
+            .join("sessions")
+            .join(format!("{}.json", capability.token));
+
+        assert!(
+            record_path.is_file(),
+            "session record should exist before cleanup"
+        );
+
+        let exit_code = cleanup_and_exit(CleanupState {
+            ssh_handle: None,
+            dbus_proxy: None,
+            pulse_bridge: None,
+            wayland_socket: None,
+            machine_id_path: None,
+            proc_privacy_state: None,
+            anonymize_file_paths: Vec::new(),
+            flatpak_portal_state: None,
+            broker_session_record_path: registration.broker_session_record_path,
+        });
+
+        assert_eq!(exit_code, 1);
+        assert!(
+            !record_path.exists(),
+            "session record should be removed during cleanup"
+        );
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn cleanup_and_return_exit_code_preserves_requested_exit_code() {
+        let config = config_with_worker_broker();
+        let host_runtime_dir = temp_test_dir("cleanup-parent-record-exit-code");
+
+        let registration = register_parent_broker_launch(
+            &config,
+            "/workspace/project",
+            "abc123def456",
+            host_runtime_dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .expect("parent session registration");
+
+        let payload = registration
+            .env_args
+            .windows(3)
+            .find(|window| window[0] == "--setenv" && window[1] == BROKER_PARENT_CAPABILITY_ENV)
+            .map(|window| window[2].clone())
+            .expect("broker parent capability env payload");
+        let capability: broker::BrokerParentCapability = serde_json::from_str(&payload).unwrap();
+        let record_path = host_runtime_dir
+            .join("cloister")
+            .join("broker")
+            .join("sessions")
+            .join(format!("{}.json", capability.token));
+
+        assert!(
+            record_path.is_file(),
+            "session record should exist before cleanup"
+        );
+
+        let exit_code = cleanup_and_return_exit_code(
+            CleanupState {
+                ssh_handle: None,
+                dbus_proxy: None,
+                pulse_bridge: None,
+                wayland_socket: None,
+                machine_id_path: None,
+                proc_privacy_state: None,
+                anonymize_file_paths: Vec::new(),
+                flatpak_portal_state: None,
+                broker_session_record_path: registration.broker_session_record_path,
+            },
+            2,
+        );
+
+        assert_eq!(exit_code, 2);
+        assert!(
+            !record_path.exists(),
+            "session record should be removed during cleanup"
+        );
+
+        let _ = std::fs::remove_dir_all(&host_runtime_dir);
+    }
+
+    #[test]
+    fn child_broker_record_path_ignores_env_override_and_uses_injected_trusted_path() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-trusted-store").join("session.json");
+        let attacker_root = temp_test_dir("child-broker-attacker-store");
+
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+        std::env::set_var("CLOISTER_BROKER_SESSION_STORE", &attacker_root);
+
+        assert!(
+            child_broker_args_with_store_dir(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/workspace/project")
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+        std::env::remove_var("CLOISTER_BROKER_SESSION_STORE");
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&attacker_root);
+    }
+
+    #[test]
+    fn child_broker_record_path_fails_closed_without_trusted_record_mount() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(Path::new("/definitely/missing/trusted-session.json")),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("trusted broker session record mount is unavailable"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_legacy_full_session_env_payload() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record =
+            temp_test_dir("child-broker-legacy-full-session-env").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&session).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("unknown field")
+                || err.contains("parse CLOISTER_BROKER_PARENT_CAPABILITY"),
+            "expected strict capability parse failure, got: {err}"
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_unknown_token_from_host_runtime_store() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-unknown-token").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        let mut mismatched_session = session.clone();
+        mismatched_session.token = "different-token".to_string();
+        std::fs::write(
+            &trusted_record,
+            serde_json::to_vec(&mismatched_session).unwrap(),
+        )
+        .unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker session token not found: token-1"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_applies_overlay_and_delegated_mount_args_from_stored_session_policy()
+     {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-apply-args").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let args = child_broker_args_with_store_dir(
+            "worker",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap()
+        .expect("child broker args");
+        assert_eq!(
+            args,
+            s(&[
+                "--overlay-src",
+                "/workspace/project",
+                "--tmp-overlay",
+                "/workspace/project",
+                "--ro-bind",
+                "/local/ephemeral/dev/abc123def456/.cache/pre-commit",
+                "/workspace/project/.cache/pre-commit",
+                "--bind",
+                "/local/worktrees/dev/abc123def456",
+                "/workspace/project/worktrees",
+            ])
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_empty_capability_token() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let mut session = broker_session_fixture();
+        session.token.clear();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+
+        let err = child_broker_args(
+            "worker",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000",
+            None,
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker parent capability token must not be empty"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_project_root_mismatch_before_session_lookup() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-project-mismatch").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/workspace/other-project",
+            "/workspace/other-project",
+            "/run/user/1000",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker project identity does not match"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_accepts_mixed_parent_child_path_views_when_dir_hash_matches() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let mut session = broker_session_fixture();
+        session.project_root = "/home/ubuntu/src/project".to_string();
+        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
+        let trusted_record = temp_test_dir("child-broker-mixed-view").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        assert!(
+            child_broker_args_with_store_dir(
+                "worker",
+                "/home/alice/src/project",
+                "/home/ubuntu/src/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/home/ubuntu/src/project")
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_unrelated_requested_root_when_views_differ() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let mut session = broker_session_fixture();
+        session.project_root = "/home/ubuntu/src/project".to_string();
+        session.dir_hash = "abc123def456".to_string();
+        let trusted_record = temp_test_dir("child-broker-unrelated-root").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/tmp/other-project",
+            "/home/ubuntu/src/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/home/ubuntu/src/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker project identity does not match"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_requested_root_when_session_dir_hash_targets_other_view()
+    {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let mut session = broker_session_fixture();
+        session.project_root = "/home/ubuntu/src/project".to_string();
+        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
+        let trusted_record = temp_test_dir("child-broker-hash-mismatch").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/tmp/unrelated-project",
+            "/home/ubuntu/src/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/home/ubuntu/src/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker project identity does not match"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_mixed_views_when_requested_root_hash_differs() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let mut session = broker_session_fixture();
+        session.project_root = "/home/ubuntu/src/project".to_string();
+        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
+        let trusted_record =
+            temp_test_dir("child-broker-capability-path-match").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            "/home/alice/src/other-project",
+            "/home/ubuntu/src/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/home/ubuntu/src/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker project identity does not match"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_accepts_exact_project_root_match_without_env_identity_fields() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-exact-match").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        assert!(
+            child_broker_args_with_store_dir(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/workspace/project"),
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_uses_project_root_overlay_source() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-overlay-lower").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        let capability = broker::BrokerParentCapability {
+            token: session.token.clone(),
+        };
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&capability).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        assert_eq!(
+            child_broker_args_with_store_dir(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/workspace/project"),
+            )
+            .unwrap()
+            .unwrap(),
+            vec![
+                "--overlay-src",
+                "/workspace/project",
+                "--tmp-overlay",
+                "/workspace/project",
+                "--ro-bind",
+                "/local/ephemeral/dev/abc123def456/.cache/pre-commit",
+                "/workspace/project/.cache/pre-commit",
+                "--bind",
+                "/local/worktrees/dev/abc123def456",
+                "/workspace/project/worktrees",
+            ]
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn child_overlay_launch_filters_generated_project_bind_after_trusted_profile_resolution() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-overlay-build-bwrap").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let mut config = config_with_worker_broker();
+        config
+            .dynamic_binds
+            .push(cloister_sandbox_lib::config::DynamicBind {
+                src: "$SANDBOX_DIR".to_string(),
+                dest: Some("$SANDBOX_DEST".to_string()),
+                mode: cloister_sandbox_lib::config::BindMode::Rw,
+                try_bind: false,
+            });
+
+        let mut runtime_vars = std::collections::HashMap::new();
+        runtime_vars.insert("SANDBOX_DIR".to_string(), "/workspace/project".to_string());
+        runtime_vars.insert("SANDBOX_DEST".to_string(), "/workspace/project".to_string());
+
+        let profile = lookup_child_profile(&session, "overlay").unwrap();
+        let filtered =
+            filter_child_overlay_project_bind(&config.dynamic_binds, &runtime_vars, Some(profile));
+
+        assert!(filtered.is_empty());
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_returns_false_without_broker_env() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+
+        assert!(
+            child_broker_args(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000",
+                None,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        }
+    }
+
+    #[test]
+    fn apply_child_broker_profile_returns_false_with_capability_without_profile_selector() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let session = broker_session_fixture();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+
+        assert!(
+            child_broker_args(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000",
+                None,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        }
+    }
+
+    #[test]
+    fn apply_child_broker_profile_returns_false_with_profile_selector_without_capability() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+
+        assert!(
+            child_broker_args(
+                "worker",
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000",
+                None,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+    }
+
+    #[test]
+    fn child_broker_args_rejects_profile_for_different_sandbox() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-sandbox-mismatch").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
+        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
+
+        let err = child_broker_args_with_store_dir(
+            "dev",
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("targets sandbox 'worker'"));
+        assert!(err.contains("current sandbox is 'dev'"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+        if let Some(value) = original_runtime_dir {
+            std::env::set_var("XDG_RUNTIME_DIR", value);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
     }
 
     #[test]
@@ -2531,6 +4533,16 @@ mod tests {
         );
         let result = validate_xdg_runtime_dir(&config, "");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn xdg_runtime_dir_required_when_worker_broker_enabled() {
+        let config = config_with_worker_broker();
+
+        let result = validate_xdg_runtime_dir(&config, "");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("XDG_RUNTIME_DIR must be set"));
     }
 
     #[test]

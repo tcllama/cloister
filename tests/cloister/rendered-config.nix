@@ -87,6 +87,23 @@ let
     };
   };
 
+  workerBrokerNoNetworkEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        network.enable = false;
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker.preset = "hardened";
+    };
+  };
+
   seccompDisabledEval = hm {
     cloister = {
       enable = true;
@@ -150,6 +167,42 @@ let
     };
   };
 
+  workerBrokerEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        workerBroker = {
+          enable = true;
+          spawnableProfiles = {
+            ephemeral = {
+              sandbox = "worker";
+              workspace.mode = "project-overlay";
+              delegatedPerDirMounts = {
+                ".cache/pre-commit" = "ro";
+              };
+            };
+            project = {
+              sandbox = "worker";
+              workspace.mode = "project-rw";
+              delegatedPerDirMounts = {
+                "worktrees" = "rw";
+                ".cache/pre-commit" = "ro";
+              };
+            };
+          };
+          availableDelegatedPerDirMounts = {
+            "worktrees".path = "/local/worktrees/dev";
+            ".cache/pre-commit" = {
+              path = "/local/ephemeral/dev";
+              subPath = ".cache/pre-commit";
+            };
+          };
+        };
+      };
+      sandboxes.worker.preset = "hardened";
+    };
+  };
+
   sandboxConfig = eval.config.cloister._internal.sandboxConfigs.dev;
   plainConfig = plainEval.config.cloister._internal.sandboxConfigs.plain;
   hostConfigOff = hostConfigOffEval.config.cloister._internal.sandboxConfigs.dev;
@@ -157,6 +210,8 @@ let
   workdirDisabled = workdirDisabledEval.config.cloister._internal.sandboxConfigs.dev;
   featuresConfig = featuresEval.config.cloister._internal.sandboxConfigs.dev;
   noNetworkConfig = noNetworkEval.config.cloister._internal.sandboxConfigs.dev;
+  workerBrokerNoNetworkConfig =
+    workerBrokerNoNetworkEval.config.cloister._internal.sandboxConfigs.dev;
   seccompDisabled = seccompDisabledEval.config.cloister._internal.sandboxConfigs.dev;
   chromiumSeccomp = chromiumSeccompEval.config.cloister._internal.sandboxConfigs.dev;
   imageStoreConfig = imageStoreEval.config.cloister._internal.sandboxConfigs.dev;
@@ -165,6 +220,7 @@ let
   validatorsRegistry = validatorsEval.config.cloister.sandboxes.dev.registry.rendered.outside.zsh;
   packagesConfig = packagesEval.config.cloister._internal.sandboxConfigs.dev;
   packagesStaticArgs = builtins.toJSON packagesConfig.static_bwrap_args;
+  workerBrokerConfig = workerBrokerEval.config.cloister._internal.sandboxConfigs.dev;
 
   plainStaticArgs = builtins.toJSON plainConfig.static_bwrap_args;
   plainDynamicBinds = builtins.toJSON plainConfig.dynamic_binds;
@@ -235,6 +291,14 @@ checks.mkCheck "test-cloister-rendered-config" [
   )
   (checks.expectEq "shared network defaults on" true plainConfig.network_enable)
   (checks.expectEq "shared network can be disabled" false noNetworkConfig.network_enable)
+  (checks.expectContains "worker broker with disabled network uses nested-sandbox seccomp variant"
+    "-chromium"
+    workerBrokerNoNetworkConfig.seccomp_filter_path
+  )
+  (checks.expectFalse
+    "worker broker with disabled network does not reuse plain no-network seccomp filter"
+    (workerBrokerNoNetworkConfig.seccomp_filter_path == noNetworkConfig.seccomp_filter_path)
+  )
   (checks.expectAssertionMessage "network namespace requires shared networking"
     missingSharedNet.assertions
     "network.namespace requires network.enable = true"
@@ -268,6 +332,35 @@ checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectContains "validators add helper binaries to sandbox PATH" "cloister-dbus-validate" (
     builtins.toJSON validatorsConfig.static_bwrap_args
   ))
+  (checks.expectEq "worker broker enable renders" true workerBrokerConfig.worker_broker.enable)
+  (checks.expectEq "worker broker ephemeral sandbox renders" "worker"
+    workerBrokerConfig.worker_broker.spawnable_profiles.ephemeral.sandbox
+  )
+  (checks.expectEq "worker broker project sandbox renders" "worker"
+    workerBrokerConfig.worker_broker.spawnable_profiles.project.sandbox
+  )
+  (checks.expectEq "worker broker project mode renders" "project-rw"
+    workerBrokerConfig.worker_broker.spawnable_profiles.project.workspace.mode
+  )
+  (checks.expectEq "worker broker delegated mount access renders" "rw"
+    workerBrokerConfig.worker_broker.spawnable_profiles.project.delegated_per_dir_mounts.worktrees
+  )
+  (checks.expectEq "worker broker available worktrees path renders" "/local/worktrees/dev"
+    workerBrokerConfig.worker_broker.available_delegated_per_dir_mounts.worktrees.path
+  )
+  (checks.expectEq "worker broker available worktrees subPath defaults null" null
+    workerBrokerConfig.worker_broker.available_delegated_per_dir_mounts.worktrees.sub_path
+  )
+  (checks.expectEq "worker broker available pre-commit path renders" "/local/ephemeral/dev"
+    workerBrokerConfig.worker_broker.available_delegated_per_dir_mounts.".cache/pre-commit".path
+  )
+  (checks.expectEq "worker broker available pre-commit subPath renders" ".cache/pre-commit"
+    workerBrokerConfig.worker_broker.available_delegated_per_dir_mounts.".cache/pre-commit".sub_path
+  )
+  (checks.expectNotContains "worker broker rendered config does not imply env session authority"
+    ''"parent_session"''
+    (builtins.toJSON workerBrokerConfig.worker_broker)
+  )
   (checks.expectEq "seccomp can be disabled" false seccompDisabled.seccomp_enable)
   (checks.expectContains "chromium seccomp uses chromium-named filter" "-chromium"
     chromiumSeccomp.seccomp_filter_path

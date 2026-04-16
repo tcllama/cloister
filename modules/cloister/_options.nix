@@ -420,6 +420,65 @@ let
           description = "Install cloister validator helpers inside the sandbox and wrap them outside.";
         };
 
+        workerBroker = {
+          enable = lib.mkEnableOption "worker broker support for spawnable sandbox profiles";
+
+          spawnableProfiles = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  sandbox = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Sandbox name used for this worker broker profile.";
+                  };
+
+                  workspace.mode = lib.mkOption {
+                    type = lib.types.enum [
+                      "project-rw"
+                      "project-overlay"
+                    ];
+                    description = "Workspace exposure mode for this worker broker profile.";
+                  };
+
+                  delegatedPerDirMounts = lib.mkOption {
+                    type = lib.types.attrsOf (
+                      lib.types.enum [
+                        "ro"
+                        "rw"
+                      ]
+                    );
+                    default = { };
+                    description = "Per-directory delegated mounts exposed to this worker broker profile.";
+                  };
+                };
+              }
+            );
+            default = { };
+            description = "Spawnable worker broker profiles keyed by profile name.";
+          };
+
+          availableDelegatedPerDirMounts = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  path = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Host base path exposed for worker broker delegated mounts.";
+                  };
+
+                  subPath = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional subpath under the delegated mount base path.";
+                  };
+                };
+              }
+            );
+            default = { };
+            description = "Available delegated per-directory mounts keyed by sandbox-relative path.";
+          };
+        };
+
         sandbox = {
           bindWorkingDirectory = lib.mkOption {
             type = lib.types.bool;

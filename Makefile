@@ -8,12 +8,14 @@ TEST_CHECKS ?= \
 	test-cloister-sandbox-core \
 	test-cloister-gui-dbus-audio \
 	test-cloister-rendered-config \
+	test-cloister-worker-broker \
 	test-cloister-image-store \
 	test-cloister-netns
 
 TEST_TARGETS = $(addprefix .#checks.x86_64-linux.,$(TEST_CHECKS))
 RUNTIME_TEST_CHECKS ?= \
 	test-runtime-sandbox-core \
+	test-runtime-worker-broker \
 	test-runtime-gui-dbus-audio \
 	test-runtime-image-store \
 	test-runtime-netns
@@ -126,13 +128,15 @@ test-changed:
 			Makefile|.github/workflows/*) \
 				checks="$(TEST_CHECKS)"; \
 				runtime_checks="$(RUNTIME_TEST_CHECKS)"; \
-				break \
 				;; \
 			tests/cloister/gui-dbus-audio.nix|tests/runtime/gui-dbus-audio.nix) \
 				add_dbus_checks \
 				;; \
 			tests/runtime/sandbox-core.nix) \
 				add_runtime_check test-runtime-sandbox-core \
+				;; \
+			tests/runtime/worker-broker.nix) \
+				add_runtime_check test-runtime-worker-broker \
 				;; \
 			tests/runtime/image-store.nix) \
 				add_runtime_check test-runtime-image-store \
@@ -172,11 +176,13 @@ test-changed:
 				add_dbus_checks; \
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
+				add_check test-cloister-worker-broker; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \
 				;; \
 			modules/cloister/_assertions.nix) \
 				add_check test-cloister-sandbox-core; \
+				add_check test-cloister-worker-broker; \
 				add_dbus_checks \
 				;; \
 			modules/cloister/_sandbox.nix) \
@@ -184,6 +190,7 @@ test-changed:
 				add_dbus_checks; \
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
+				add_check test-cloister-worker-broker; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \
 				;; \
@@ -191,6 +198,7 @@ test-changed:
 				add_check test-cloister-sandbox-core; \
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
+				add_check test-cloister-worker-broker; \
 				add_dbus_checks; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \

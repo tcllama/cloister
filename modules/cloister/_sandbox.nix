@@ -233,18 +233,24 @@ let
         ]
       );
 
+      workerBrokerNeedsNestedNamespaces = sCfg.workerBroker.enable;
+
+      seccompAllowNestedSandboxNamespaces =
+        sCfg.sandbox.seccomp.allowChromiumSandbox || workerBrokerNeedsNestedNamespaces;
+
+      # Worker-broker launches can invoke nested bubblewrap, which needs a
+      # transient NETLINK_ROUTE socket while bringing up loopback.
+      seccompDenyNetlink = !sCfg.network.enable && !workerBrokerNeedsNestedNamespaces;
+
       seccompFilter = lib.optionalString sCfg.sandbox.seccomp.enable (
         pkgs.runCommand
-          (
-            "cloister-seccomp-${name}"
-            + lib.optionalString sCfg.sandbox.seccomp.allowChromiumSandbox "-chromium"
-          )
+          ("cloister-seccomp-${name}" + lib.optionalString seccompAllowNestedSandboxNamespaces "-chromium")
           { }
           ''
             ${cloister-seccomp-filter}/bin/cloister-seccomp-filter \
               --output "$out" \
-              ${lib.optionalString (!sCfg.network.enable) "--deny-netlink"} \
-              ${lib.optionalString sCfg.sandbox.seccomp.allowChromiumSandbox "--allow-chromium-sandbox"}
+              ${lib.optionalString seccompDenyNetlink "--deny-netlink"} \
+              ${lib.optionalString seccompAllowNestedSandboxNamespaces "--allow-chromium-sandbox"}
           ''
       );
 
@@ -290,6 +296,11 @@ let
 
       perDirBuckets = lib.filterAttrs (_: paths: paths != [ ]) sCfg.sandbox.extraBinds.perDir;
       perDirPaths = lib.concatLists (lib.attrValues perDirBuckets);
+      workerBrokerAvailableDelegatedMounts = builtins.attrValues sCfg.workerBroker.availableDelegatedPerDirMounts;
+      workerBrokerEffectiveDelegatedMountPaths = map (
+        mount:
+        normalizeDangerousPath (mount.path + lib.optionalString (mount.subPath != null) "/${mount.subPath}")
+      ) workerBrokerAvailableDelegatedMounts;
 
       dirBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.dir;
       fileBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.file;
@@ -622,6 +633,14 @@ let
             ++ perDirPaths
             ++ sCfg.sandbox.extraBinds.managedFile;
           copyFileSrcPaths = map (cf: cf.src) sCfg.sandbox.copyFiles;
+          workerBrokerKeyPaths =
+            lib.attrNames sCfg.workerBroker.availableDelegatedPerDirMounts
+            ++ lib.concatMap (profile: lib.attrNames profile.delegatedPerDirMounts) (
+              builtins.attrValues sCfg.workerBroker.spawnableProfiles
+            );
+          workerBrokerPaths = lib.concatMap (
+            mount: [ mount.path ] ++ lib.optional (mount.subPath != null) mount.subPath
+          ) workerBrokerAvailableDelegatedMounts;
         in
         bindPaths
         ++ dirPaths
@@ -629,6 +648,8 @@ let
         ++ symlinkPaths
         ++ extraBindPaths
         ++ copyFileSrcPaths
+        ++ workerBrokerKeyPaths
+        ++ workerBrokerPaths
         ++ lib.attrNames sCfg.sandbox.env
         ++ sCfg.sandbox.devBinds
         ++ sCfg.sandbox.disallowedPaths
@@ -683,7 +704,8 @@ let
         ++ perDirPaths
         ++ managedFileBindPaths
         ++ rawBindPaths
-        ++ map (cf: toDangerousPath cf.src) sCfg.sandbox.copyFiles;
+        ++ map (cf: toDangerousPath cf.src) sCfg.sandbox.copyFiles
+        ++ map toDangerousPath workerBrokerEffectiveDelegatedMountPaths;
 
       normalizedAllowDangerousPaths = builtins.filter (p: p != "") (
         map normalizeDangerousPath sCfg.sandbox.allowDangerousPaths
@@ -750,7 +772,23 @@ let
           guiEnabled
           normalizeCopyDest
           ;
+        sandboxNames = builtins.attrNames cfg.sandboxes;
         hasPerDirBinds = perDirPaths != [ ];
+      };
+
+      renderedWorkerBroker = {
+        inherit (sCfg.workerBroker) enable;
+        spawnable_profiles = lib.mapAttrs (_: profile: {
+          inherit (profile) sandbox;
+          workspace = {
+            inherit (profile.workspace) mode;
+          };
+          delegated_per_dir_mounts = profile.delegatedPerDirMounts;
+        }) sCfg.workerBroker.spawnableProfiles;
+        available_delegated_per_dir_mounts = lib.mapAttrs (_: mount: {
+          inherit (mount) path;
+          sub_path = mount.subPath;
+        }) sCfg.workerBroker.availableDelegatedPerDirMounts;
       };
 
       # --- Compiled binary: JSON config and makeWrapper package ---
@@ -891,6 +929,7 @@ let
           dbusProxyWrapper
           flatpakAppId
           pipewireSocketName
+          renderedWorkerBroker
           buildRevision
           bubblewrap-subset-pid
           osConfig

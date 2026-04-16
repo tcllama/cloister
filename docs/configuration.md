@@ -673,6 +673,42 @@ cloister.sandboxes.dev.dbus = {
 
 Allows sandboxed tools to send desktop notifications through a filtered, per-launch D-Bus proxy. See [dbus.md](dbus.md) for policy examples and setup details.
 
+### Worker broker
+
+`workerBroker` config renders the host-side policy the parent launcher needs to register worker sessions and advertise spawnable profiles.
+
+```nix
+cloister.sandboxes = {
+  dev.workerBroker = {
+    enable = true;
+    spawnableProfiles.project = {
+      sandbox = "worker";
+      workspace.mode = "project-rw";
+      delegatedPerDirMounts.worktrees = "rw";
+    };
+    availableDelegatedPerDirMounts.worktrees.path = "/local/worktrees/dev";
+  };
+
+  worker = {
+    preset = "hardened";
+    shell.hostConfig = false;
+  };
+};
+```
+
+Trust model:
+
+- parent sandboxes receive only opaque capability info
+- child launches resolve policy from trusted mounted session records / host-side session store
+- session record cleanup is attempted on normal parent exit
+- env-carried full session JSON is not trusted
+
+The rendered sandbox JSON still includes the worker broker profile and delegated mount metadata because the parent launcher needs that host-authored policy when registering launches. That does not make child-side environment variables authoritative: child launches re-resolve the selected profile from the trusted mounted session record instead of trusting env-carried policy blobs.
+
+For an end-to-end setup and manual testing walkthrough, see [worker-broker.md](worker-broker.md).
+
+Session-record cleanup is currently best-effort on normal parent exit. Records left behind by crashes or hard kills are not yet pruned automatically.
+
 ### SSH agent
 
 ```nix
@@ -748,6 +784,9 @@ See the sections above for usage examples and explanations.
 | `shell.customRcPath.bashrc` | nullOr path | `null` | Custom bashrc file to source inside the sandbox |
 | `shell.customRcPath.profile` | nullOr path | `null` | Custom profile file to source inside the sandbox |
 | `validators.enable` | bool | `false` | Install cloister validator helpers and wrap them outside |
+| `workerBroker.enable` | bool | `false` | Enable worker broker support for spawnable sandbox profiles |
+| `workerBroker.spawnableProfiles` | attrsOf submodule | `{}` | Spawnable worker broker profiles keyed by profile name |
+| `workerBroker.availableDelegatedPerDirMounts` | attrsOf submodule | `{}` | Available delegated per-directory mounts keyed by sandbox-relative path |
 | `network.enable` | bool | `true` | Share host network namespace |
 | `network.namespace` | nullOr str | `null` | Linux network namespace to join (localhost-netns host services are reachable as `host.internal:<port>`) |
 | `sandbox.bindWorkingDirectory` | bool | `true` | Bind-mount the working directory (git root or CWD) into the sandbox. Disable for app-specific sandboxes |

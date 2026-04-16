@@ -66,6 +66,15 @@ let
         ;
     };
 
+    "test-cloister-worker-broker" = import ./cloister/worker-broker.nix {
+      inherit
+        checks
+        hm
+        lib
+        pkgs
+        ;
+    };
+
     "test-cloister-image-store" = import ./cloister-image-store/default.nix {
       inherit
         checks
@@ -87,6 +96,10 @@ let
 
   runtimeChecks = {
     "test-runtime-sandbox-core" = import ./runtime/sandbox-core.nix {
+      inherit pkgs;
+    };
+
+    "test-runtime-worker-broker" = import ./runtime/worker-broker.nix {
       inherit pkgs;
     };
 

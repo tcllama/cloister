@@ -32,6 +32,7 @@
   dbusProxyWrapper,
   flatpakAppId,
   pipewireSocketName,
+  renderedWorkerBroker,
   buildRevision,
   bubblewrap-subset-pid,
   osConfig ? null,
@@ -450,6 +451,7 @@ let
       dbus_proxy_socket_name = if sCfg.dbus.enable then "cloister/dbus/${name}" else null;
       dbus_proxy_path = if sCfg.dbus.enable then dbusProxyWrapper else null;
       flatpak_app_id = if portalDesktopEnabled then flatpakAppId else null;
+      worker_broker = renderedWorkerBroker;
       build_revision = buildRevision;
     };
 

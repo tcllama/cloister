@@ -158,13 +158,65 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub flatpak_app_id: Option<String>,
 
+    /// Worker broker config passed through from Nix.
+    #[serde(default)]
+    pub worker_broker: WorkerBrokerConfig,
+
     /// Build revision string embedded into generated launchers and configs.
     #[serde(default)]
     pub build_revision: Option<String>,
 }
 
-/// A bind mount that needs runtime variable substitution.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerBrokerConfig {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub spawnable_profiles: BTreeMap<String, SpawnableProfile>,
+    #[serde(default)]
+    pub available_delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnableProfile {
+    pub sandbox: String,
+    pub workspace: WorkspaceConfig,
+    #[serde(default)]
+    pub delegated_per_dir_mounts: BTreeMap<String, DelegatedAccessMode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+    pub mode: WorkspaceMode,
+}
+
+#[derive(Debug, serde::Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceMode {
+    ProjectRw,
+    ProjectOverlay,
+}
+
+#[derive(Debug, serde::Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DelegatedAccessMode {
+    Ro,
+    Rw,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedPerDirMount {
+    pub path: String,
+    #[serde(default)]
+    pub sub_path: Option<String>,
+}
+
+/// A bind mount that needs runtime variable substitution.
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DynamicBind {
     pub src: String,
@@ -272,6 +324,9 @@ impl SandboxConfig {
             return Err(
                 "flatpak_app_id must not be empty when portal integration is enabled".into(),
             );
+        }
+        if self.worker_broker.enable && !self.bind_working_directory {
+            return Err("worker_broker.enable requires bind_working_directory = true".into());
         }
         if self.store_mode == StoreMode::ImageStore {
             if self.store_id.as_deref().unwrap_or("").is_empty() {
@@ -457,6 +512,98 @@ mod tests {
             config.per_dir.get("/state/cloister"),
             Some(&vec![".cache".to_string(), ".local/share".to_string()])
         );
+    }
+
+    #[test]
+    fn parses_worker_broker_config() {
+        let json = serde_json::json!({
+            "name": "dev",
+            "bwrap_path": "/nix/store/xxx/bin/bwrap",
+            "shell_bin": "/nix/store/xxx/bin/zsh",
+            "shell_interactive_args": ["-i"],
+            "shell_name": "zsh",
+            "home_directory": "/home/user",
+            "sandbox_home": "/home/user",
+            "per_dir": {},
+            "copy_file_base": "/state/cloister",
+            "git_path": "/nix/store/xxx/bin/git",
+            "worker_broker": {
+                "enable": true,
+                "spawnable_profiles": {
+                    "ephemeral": {
+                        "sandbox": "worker",
+                        "workspace": {
+                            "mode": "project-overlay"
+                        },
+                        "delegated_per_dir_mounts": {
+                            ".cache/pre-commit": "ro"
+                        }
+                    }
+                },
+                "available_delegated_per_dir_mounts": {
+                    "worktrees": {
+                        "path": "/local/worktrees/dev",
+                        "sub_path": null
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let config: SandboxConfig = serde_json::from_str(&json).unwrap();
+        let worker_broker = &config.worker_broker;
+        let profile = worker_broker
+            .spawnable_profiles
+            .get("ephemeral")
+            .expect("ephemeral profile");
+        let available_mount = worker_broker
+            .available_delegated_per_dir_mounts
+            .get("worktrees")
+            .expect("available mount");
+
+        assert_eq!(config.name, "dev");
+        assert!(worker_broker.enable);
+        assert_eq!(profile.sandbox, "worker");
+        assert_eq!(profile.workspace.mode, WorkspaceMode::ProjectOverlay);
+        assert_eq!(
+            profile.delegated_per_dir_mounts.get(".cache/pre-commit"),
+            Some(&DelegatedAccessMode::Ro)
+        );
+        assert_eq!(available_mount.path, "/local/worktrees/dev");
+        assert_eq!(available_mount.sub_path.as_deref(), None);
+    }
+
+    #[test]
+    fn validate_rejects_worker_broker_without_bind_working_directory() {
+        let json = serde_json::json!({
+            "name": "dev",
+            "bwrap_path": "/nix/store/xxx/bin/bwrap",
+            "shell_bin": "/nix/store/xxx/bin/zsh",
+            "shell_interactive_args": ["-i"],
+            "shell_name": "zsh",
+            "home_directory": "/home/user",
+            "sandbox_home": "/home/user",
+            "bind_working_directory": false,
+            "per_dir": {},
+            "copy_file_base": "/state/cloister",
+            "git_path": "/nix/store/xxx/bin/git",
+            "worker_broker": {
+                "enable": true,
+                "spawnable_profiles": {
+                    "ephemeral": {
+                        "sandbox": "worker",
+                        "workspace": {
+                            "mode": "project-overlay"
+                        }
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let config: SandboxConfig = serde_json::from_str(&json).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("worker_broker.enable requires bind_working_directory"));
     }
 
     #[test]

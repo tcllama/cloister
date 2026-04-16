@@ -116,8 +116,18 @@ const BLOCKED_SYSCALLS: &[&str] = &[
 /// Syscalls exempted when --allow-chromium-sandbox is set.
 /// Chromium/Electron's internal sandbox needs chroot for renderer isolation
 /// and namespace creation (unshare/setns) for user/PID namespace setup.
+/// Nested bubblewrap launches also need mount(2) for the initial mount
+/// propagation step (`mount(NULL, "/", NULL, MS_REC|MS_SLAVE, NULL)`),
+/// pivot_root(2) for rootfs handoff, and umount2(2) for the paired cleanup.
 /// Safe inside bwrap — the process is already in an unprivileged user namespace.
-const CHROMIUM_SANDBOX_SYSCALLS: &[&str] = &["chroot", "unshare", "setns"];
+const CHROMIUM_SANDBOX_SYSCALLS: &[&str] = &[
+    "mount",
+    "umount2",
+    "pivot_root",
+    "chroot",
+    "unshare",
+    "setns",
+];
 
 fn build_filter(
     allow_chromium_sandbox: bool,
@@ -300,20 +310,23 @@ fn build_filter(
             ],
         )?;
 
-        // Block PR_SET_DUMPABLE with SUID_DUMP_USER — prevents re-enabling core dumps
-        // after the kernel cleared dumpability on namespace entry. Disabling dumps
-        // (arg1 == 0) is still allowed.
+        // Block PR_SET_DUMPABLE with SUID_DUMP_USER by default to prevent restoring
+        // host-visible core dumps after the kernel cleared dumpability on namespace
+        // entry. Nested Chromium/bwrap sandboxes need this transition during their
+        // own setup, so skip just this rule in allow-chromium-sandbox mode.
         const PR_SET_DUMPABLE: u64 = 4;
         const SUID_DUMP_USER: u64 = 1;
 
-        filter.add_rule_conditional(
-            errno_action,
-            prctl_syscall,
-            &[
-                ScmpArgCompare::new(0, ScmpCompareOp::Equal, PR_SET_DUMPABLE),
-                ScmpArgCompare::new(1, ScmpCompareOp::Equal, SUID_DUMP_USER),
-            ],
-        )?;
+        if !allow_chromium_sandbox {
+            filter.add_rule_conditional(
+                errno_action,
+                prctl_syscall,
+                &[
+                    ScmpArgCompare::new(0, ScmpCompareOp::Equal, PR_SET_DUMPABLE),
+                    ScmpArgCompare::new(1, ScmpCompareOp::Equal, SUID_DUMP_USER),
+                ],
+            )?;
+        }
     }
 
     Ok(filter)
@@ -364,6 +377,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn default_filter_builds() {
@@ -381,8 +395,6 @@ mod tests {
     }
 
     fn export_filter_bytes(allow_chromium_sandbox: bool, deny_netlink: bool) -> Vec<u8> {
-        use std::io::Read;
-
         let filter = build_filter(allow_chromium_sandbox, deny_netlink).unwrap();
         let dir = std::env::temp_dir();
 
@@ -406,6 +418,34 @@ mod tests {
         fs::File::open(&path)
             .unwrap()
             .read_to_end(&mut buf)
+            .unwrap();
+        let _ = fs::remove_file(&path);
+        buf
+    }
+
+    fn export_filter_pfc(allow_chromium_sandbox: bool, deny_netlink: bool) -> String {
+        let filter = build_filter(allow_chromium_sandbox, deny_netlink).unwrap();
+        let dir = std::env::temp_dir();
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let path = dir.join(format!(
+            "seccomp-test-{}-{}-{}-pfc.txt",
+            std::process::id(),
+            id,
+            allow_chromium_sandbox as u8 + deny_netlink as u8 * 2
+        ));
+
+        let mut file = fs::File::create(&path).unwrap();
+        filter.export_pfc(&mut file).unwrap();
+        drop(file);
+
+        let mut buf = String::new();
+        fs::File::open(&path)
+            .unwrap()
+            .read_to_string(&mut buf)
             .unwrap();
         let _ = fs::remove_file(&path);
         buf
@@ -436,6 +476,63 @@ mod tests {
         assert_ne!(
             buf_default, buf_no_netlink,
             "default and deny-netlink filters should produce different BPF"
+        );
+    }
+
+    #[test]
+    fn default_filter_blocks_pr_set_dumpable_restore() {
+        let pfc = export_filter_pfc(false, false);
+
+        assert!(
+            pfc.contains("prctl")
+                && pfc.contains("$a0.lo32 == 4")
+                && pfc.contains("$a1.lo32 == 1")
+                && pfc.contains("ERRNO(38)"),
+            "default filter should block prctl(PR_SET_DUMPABLE, 1); got:\n{pfc}"
+        );
+    }
+
+    #[test]
+    fn chromium_filter_allows_mount_setup() {
+        let pfc = export_filter_pfc(true, false);
+
+        assert!(
+            !pfc.contains("filter for syscall \"mount\"") && !pfc.contains("if ($syscall == 165)"),
+            "allow-chromium-sandbox filter should not block mount(2); got:\n{pfc}"
+        );
+    }
+
+    #[test]
+    fn chromium_filter_allows_pivot_root_setup() {
+        let pfc = export_filter_pfc(true, false);
+
+        assert!(
+            !pfc.contains("filter for syscall \"pivot_root\"")
+                && !pfc.contains("if ($syscall == 155)"),
+            "allow-chromium-sandbox filter should not block pivot_root(2); got:\n{pfc}"
+        );
+    }
+
+    #[test]
+    fn chromium_filter_allows_umount2_cleanup() {
+        let pfc = export_filter_pfc(true, false);
+
+        assert!(
+            !pfc.contains("filter for syscall \"umount2\"")
+                && !pfc.contains("if ($syscall == 166)"),
+            "allow-chromium-sandbox filter should not block umount2(2); got:\n{pfc}"
+        );
+    }
+
+    #[test]
+    fn chromium_filter_allows_pr_set_dumpable_restore() {
+        let pfc = export_filter_pfc(true, false);
+
+        assert!(
+            !(pfc.contains("prctl")
+                && pfc.contains("$a0.lo32 == 4")
+                && pfc.contains("$a1.lo32 == 1")),
+            "allow-chromium-sandbox filter should not block prctl(PR_SET_DUMPABLE, 1); got:\n{pfc}"
         );
     }
 }
