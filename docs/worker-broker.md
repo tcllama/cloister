@@ -12,6 +12,8 @@ Use worker broker when a sandboxed tool needs to delegate work to another Cloist
 
 The parent sandbox gets an opaque capability token in env, while authoritative launch policy stays on the host in a trusted session record. The parent launcher may still have host-authored broker profile and delegated mount metadata available from its rendered config.
 
+Worker broker also requires `XDG_RUNTIME_DIR` so the parent launch can register its trusted session record on the host.
+
 ## Trust Model
 
 - parent sandboxes receive an opaque capability token in env
@@ -106,5 +108,6 @@ The runtime coverage for this flow lives in `tests/runtime/worker-broker.nix`.
 
 - session-record cleanup is best-effort on normal parent exit
 - crash or hard-kill leftovers are not yet pruned automatically
+- worker broker requires `XDG_RUNTIME_DIR`
 - worker broker requires `sandbox.bindWorkingDirectory = true`
 - child launches are limited to the same project identity and configured profiles

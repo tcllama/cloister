@@ -2345,7 +2345,8 @@ fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
 fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
     if requires_xdg_runtime_dir(config) && xdg_runtime_dir.is_empty() {
         return Err(
-            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, or audio features.".to_string(),
+            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or worker broker features."
+                .to_string(),
         );
     }
     Ok(())
@@ -4501,7 +4502,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result.unwrap_err().contains(
-                "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, or audio features."
+                "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or worker broker features."
             )
         );
     }
