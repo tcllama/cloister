@@ -785,6 +785,9 @@ let
           };
           delegated_per_dir_mounts = profile.delegatedPerDirMounts;
         }) sCfg.workerBroker.spawnableProfiles;
+        generated_launchers = lib.mapAttrs (_: launcher: {
+          inherit (launcher) profile sandbox;
+        }) sCfg.workerBroker.generatedLaunchers;
         available_delegated_per_dir_mounts = lib.mapAttrs (_: mount: {
           inherit (mount) path;
           sub_path = mount.subPath;

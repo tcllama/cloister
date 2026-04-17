@@ -87,6 +87,16 @@ let
     mountName:
     "workerBroker.availableDelegatedPerDirMounts.${mountName}.path must be an absolute traversal-free host path"
   ) (lib.attrNames invalidDelegatedMountBasePaths);
+  inherit (workerBrokerCfg) invalidGeneratedLauncherNames;
+  generatedLauncherNames = lib.attrNames workerBrokerCfg.generatedLaunchers;
+  generatedLauncherAliasCollisions = lib.intersectLists generatedLauncherNames (
+    lib.attrNames sCfg.registry.aliases
+  );
+  generatedLauncherFunctionCollisions = lib.intersectLists generatedLauncherNames (
+    lib.attrNames sCfg.registry.functions
+  );
+  generatedLauncherCommandCollisions = lib.intersectLists generatedLauncherNames sCfg.registry.commands;
+  generatedLauncherExtraCommandCollisions = lib.intersectLists generatedLauncherNames sCfg.registry.extraCommands;
   invalidDelegatedMountKeyMessages = lib.concatStringsSep "; " (
     map (
       _: "workerBroker availableDelegatedPerDirMounts keys must be sandbox-relative descendant paths"
@@ -218,6 +228,30 @@ in
   {
     assertion = invalidDelegatedMountBasePaths == { };
     message = "cloister.sandboxes.${name}: ${invalidDelegatedMountBasePathMessages}.";
+  }
+  {
+    assertion = invalidGeneratedLauncherNames == [ ];
+    message = "cloister.sandboxes.${name}: workerBroker.spawnableProfiles keys must produce safe generated launcher names: ${
+      lib.concatStringsSep ", " (
+        map (launcherName: lib.removePrefix "clb-" launcherName) invalidGeneratedLauncherNames
+      )
+    }";
+  }
+  {
+    assertion = generatedLauncherAliasCollisions == [ ];
+    message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.aliases: ${lib.concatStringsSep ", " generatedLauncherAliasCollisions}";
+  }
+  {
+    assertion = generatedLauncherFunctionCollisions == [ ];
+    message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.functions: ${lib.concatStringsSep ", " generatedLauncherFunctionCollisions}";
+  }
+  {
+    assertion = generatedLauncherCommandCollisions == [ ];
+    message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.commands: ${lib.concatStringsSep ", " generatedLauncherCommandCollisions}";
+  }
+  {
+    assertion = generatedLauncherExtraCommandCollisions == [ ];
+    message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.extraCommands: ${lib.concatStringsSep ", " generatedLauncherExtraCommandCollisions}";
   }
   {
     assertion =

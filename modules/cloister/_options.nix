@@ -55,6 +55,23 @@ let
       allCommands = regCfg.commands ++ regCfg.extraCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
+      generatedLauncherNames = map (profileName: "clb-${profileName}") (
+        lib.attrNames config.workerBroker.spawnableProfiles
+      );
+      invalidGeneratedLauncherNames = builtins.filter (
+        launcherName: builtins.match patterns.safeCommand launcherName == null
+      ) generatedLauncherNames;
+      generatedLaunchers =
+        if config.workerBroker.enable then
+          lib.mapAttrs' (
+            profileName: profile:
+            lib.nameValuePair "clb-${profileName}" {
+              profile = profileName;
+              inherit (profile) sandbox;
+            }
+          ) config.workerBroker.spawnableProfiles
+        else
+          { };
 
       validatorPackages =
         let
@@ -476,6 +493,34 @@ let
             );
             default = { };
             description = "Available delegated per-directory mounts keyed by sandbox-relative path.";
+          };
+
+          generatedLaunchers = lib.mkOption {
+            type = lib.types.attrsOf (
+              lib.types.submodule {
+                options = {
+                  profile = lib.mkOption {
+                    type = lib.types.str;
+                    readOnly = true;
+                    description = "Worker broker profile referenced by the generated launcher.";
+                  };
+
+                  sandbox = lib.mkOption {
+                    type = lib.types.str;
+                    readOnly = true;
+                    description = "Spawnable sandbox referenced by the generated launcher.";
+                  };
+                };
+              }
+            );
+            readOnly = true;
+            description = "Computed worker broker launcher metadata keyed by generated launcher name.";
+          };
+
+          invalidGeneratedLauncherNames = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            readOnly = true;
+            description = "Generated worker broker launcher names that do not satisfy safe command naming rules.";
           };
         };
 
@@ -1689,6 +1734,10 @@ let
 
           # Computed registry rendering
           registry.rendered = { inherit inside outside; };
+
+          workerBroker.generatedLaunchers = generatedLaunchers;
+          workerBroker.invalidGeneratedLauncherNames =
+            if config.workerBroker.enable then invalidGeneratedLauncherNames else [ ];
 
           init.rendered = lib.mkDefault (
             lib.concatStringsSep "\n" (

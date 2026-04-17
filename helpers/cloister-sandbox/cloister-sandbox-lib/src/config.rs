@@ -175,7 +175,16 @@ pub struct WorkerBrokerConfig {
     #[serde(default)]
     pub spawnable_profiles: BTreeMap<String, SpawnableProfile>,
     #[serde(default)]
+    pub generated_launchers: BTreeMap<String, GeneratedLauncher>,
+    #[serde(default)]
     pub available_delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedLauncher {
+    pub profile: String,
+    pub sandbox: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,6 +549,12 @@ mod tests {
                         }
                     }
                 },
+                "generated_launchers": {
+                    "clb-ephemeral": {
+                        "profile": "ephemeral",
+                        "sandbox": "worker"
+                    }
+                },
                 "available_delegated_per_dir_mounts": {
                     "worktrees": {
                         "path": "/local/worktrees/dev",
@@ -556,6 +571,10 @@ mod tests {
             .spawnable_profiles
             .get("ephemeral")
             .expect("ephemeral profile");
+        let generated_launcher = worker_broker
+            .generated_launchers
+            .get("clb-ephemeral")
+            .expect("generated launcher");
         let available_mount = worker_broker
             .available_delegated_per_dir_mounts
             .get("worktrees")
@@ -565,6 +584,8 @@ mod tests {
         assert!(worker_broker.enable);
         assert_eq!(profile.sandbox, "worker");
         assert_eq!(profile.workspace.mode, WorkspaceMode::ProjectOverlay);
+        assert_eq!(generated_launcher.profile, "ephemeral");
+        assert_eq!(generated_launcher.sandbox, "worker");
         assert_eq!(
             profile.delegated_per_dir_mounts.get(".cache/pre-commit"),
             Some(&DelegatedAccessMode::Ro)

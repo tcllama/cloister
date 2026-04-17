@@ -14,25 +14,35 @@ let
   fixture = pkgs.writeShellScriptBin "cloister-worker-broker-fixture" ''
     set -eu
 
-    worker_bin=${workerPackage}/bin/cl-worker
-
     case "$1" in
       child-project-rw-write)
         printf '%s\n' 'project-rw' > project-rw.txt
+        ;;
+      child-same-sandbox-write)
+        printf '%s\n' 'same-sandbox' > same-sandbox.txt
         ;;
       child-overlay-write)
         printf '%s\n' 'overlay-child' > overlay-only.txt
         printf '%s\n' 'overlay-mutated' > host.txt
         ;;
+      parent-local)
+        clb-local "$0" child-same-sandbox-write
+        ;;
       parent-project-rw)
-        env CLOISTER_BROKER_CHILD_PROFILE=project "$worker_bin" -c "$0" child-project-rw-write
+        clb-project "$0" child-project-rw-write
         ;;
       parent-overlay)
-        env CLOISTER_BROKER_CHILD_PROFILE=ephemeral "$worker_bin" -c "$0" child-overlay-write
+        clb-ephemeral "$0" child-overlay-write
         ;;
       parent-same-project)
         cd ${lib.escapeShellArg nestedProjectDir}
-        env CLOISTER_BROKER_CHILD_PROFILE=project "$worker_bin" -c "$0" child-project-rw-write
+        clb-project "$0" child-project-rw-write
+        ;;
+      parent-missing-command)
+        clb-project
+        ;;
+      parent-c-rejected)
+        clb-project -c "$0" child-project-rw-write
         ;;
       *)
         printf 'unknown fixture command: %s\n' "$1" >&2
@@ -77,6 +87,10 @@ let
         workerBroker = {
           enable = true;
           spawnableProfiles = {
+            local = {
+              sandbox = "dev";
+              workspace.mode = "project-rw";
+            };
             ephemeral = {
               sandbox = "worker";
               workspace.mode = "project-overlay";
@@ -187,6 +201,17 @@ pkgs.testers.runNixOSTest (_: {
 
     machine.succeed(
         tester_shell
+        + "'cd ${projectDir} && rm -f same-sandbox.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-local'"
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/same-sandbox.txt",
+        "same-sandbox",
+        "same-sandbox broker launcher writes visible file content",
+    )
+
+    machine.succeed(
+        tester_shell
         + "'cd ${projectDir} && printf \"%s\\n\" host-original > host.txt && rm -f overlay-only.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-overlay'"
     )
     assert_eq(
@@ -196,6 +221,22 @@ pkgs.testers.runNixOSTest (_: {
         "overlay worker does not mutate host file",
     )
     machine.fail("test -e ${projectDir}/overlay-only.txt")
+
+    assert_failure_contains(
+        machine,
+        tester_shell
+        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-missing-command'",
+        "clb-project: expected a command to run",
+        "generated worker broker launcher rejects missing command argv",
+    )
+
+    assert_failure_contains(
+        machine,
+        tester_shell
+        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-c-rejected'",
+        "broker launcher does not support -c; pass the command argv directly",
+        "generated worker broker launcher rejects -c shorthand",
+    )
 
     assert_failure_contains(
         machine,

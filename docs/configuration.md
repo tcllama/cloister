@@ -158,6 +158,8 @@ cloister.sandboxes.dev.sandbox.env = {
 
 The `CLOISTER` env var is set to the sandbox name inside the sandbox (e.g., `CLOISTER=dev`).
 
+When worker broker is enabled for a sandbox, Cloister also prepends generated `clb-<profile>` launchers to that sandbox's `PATH`, so they are available by plain name inside the parent sandbox.
+
 `LOCALE_ARCHIVE` is set to the `glibcLocales` store path by default, providing glibc locale support inside the sandbox. This prevents "cannot set LC_ALL" warnings and ensures correct date formatting, sorting, and Unicode handling.
 
 To pass through host environment variables when they are set, use `sandbox.passthroughEnv`:
@@ -695,6 +697,8 @@ cloister.sandboxes = {
   };
 };
 ```
+
+This also installs generated launchers in the parent sandbox package named `clb-<profile>`. Run them inside the parent sandbox as `clb-<profile> <command> [args...]`.
 
 Trust model:
 

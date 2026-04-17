@@ -54,6 +54,7 @@ const SIGINT_ESCALATION_WINDOW_SECS: i64 = 2;
 const SIGTERM_GRACE_SECS: libc::c_uint = 10;
 const BROKER_PARENT_CAPABILITY_ENV: &str = "CLOISTER_BROKER_PARENT_CAPABILITY";
 const BROKER_CHILD_PROFILE_ENV: &str = "CLOISTER_BROKER_CHILD_PROFILE";
+const CLOISTER_CONFIG_PATH_ENV: &str = "CLOISTER_CONFIG_PATH";
 const BROKER_SESSION_RECORD_CHILD_PATH: &str = "/run/cloister/broker/session.json";
 
 fn broker_parent_capability_token() -> String {
@@ -114,9 +115,16 @@ fn force_signal_target(pid: libc::pid_t, interactive: bool) -> libc::pid_t {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BrokerLaunchSelector {
+    profile: String,
+    sandbox: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CliArgs {
     config_path: Option<String>,
     after_netns: bool,
+    broker_launch: Option<BrokerLaunchSelector>,
     sandbox_args: Vec<String>,
 }
 
@@ -132,6 +140,38 @@ fn set_after_netns(cli: &mut CliArgs) -> Result<(), String> {
         return Err("cloister-sandbox: --after-netns may only be passed once".to_string());
     }
     cli.after_netns = true;
+    Ok(())
+}
+
+fn set_broker_launch_profile(cli: &mut CliArgs, profile: String) -> Result<(), String> {
+    let selector = cli
+        .broker_launch
+        .get_or_insert_with(|| BrokerLaunchSelector {
+            profile: String::new(),
+            sandbox: String::new(),
+        });
+    if !selector.profile.is_empty() {
+        return Err(
+            "cloister-sandbox: --broker-launch-profile may only be passed once".to_string(),
+        );
+    }
+    selector.profile = profile;
+    Ok(())
+}
+
+fn set_broker_launch_sandbox(cli: &mut CliArgs, sandbox: String) -> Result<(), String> {
+    let selector = cli
+        .broker_launch
+        .get_or_insert_with(|| BrokerLaunchSelector {
+            profile: String::new(),
+            sandbox: String::new(),
+        });
+    if !selector.sandbox.is_empty() {
+        return Err(
+            "cloister-sandbox: --broker-launch-sandbox may only be passed once".to_string(),
+        );
+    }
+    selector.sandbox = sandbox;
     Ok(())
 }
 
@@ -1003,7 +1043,18 @@ fn err_prefix(name: &str) -> String {
 fn prepare_run_cmd(
     config: &SandboxConfig,
     sandbox_args: &[String],
+    broker_launch: Option<&BrokerLaunchSelector>,
 ) -> Result<(Vec<String>, bool), &'static str> {
+    if broker_launch.is_some() {
+        if sandbox_args.is_empty() {
+            return Err("broker launcher requires a command argv");
+        }
+        if matches!(sandbox_args.first().map(String::as_str), Some("-c")) {
+            return Err("broker launcher does not support -c; pass the command argv directly");
+        }
+        return Ok((sandbox_args.to_vec(), false));
+    }
+
     let parsed_args = env::parse_sandbox_args(sandbox_args)?;
     let run_cmd = env::build_run_cmd(
         &config.shell_bin,
@@ -1194,6 +1245,7 @@ fn load_parent_broker_capability() -> Result<Option<broker::BrokerParentCapabili
 
 fn child_broker_args(
     sandbox_name: &str,
+    selector_override: Option<&BrokerLaunchSelector>,
     host_project_root: &str,
     child_project_root: &str,
     host_runtime_dir: &str,
@@ -1202,6 +1254,7 @@ fn child_broker_args(
 ) -> Result<Option<Vec<String>>, String> {
     child_broker_args_with_store_dir(
         sandbox_name,
+        selector_override,
         host_project_root,
         child_project_root,
         host_runtime_dir,
@@ -1212,6 +1265,7 @@ fn child_broker_args(
 
 fn child_broker_args_with_store_dir(
     sandbox_name: &str,
+    selector_override: Option<&BrokerLaunchSelector>,
     host_project_root: &str,
     child_project_root: &str,
     _host_runtime_dir: &str,
@@ -1221,12 +1275,22 @@ fn child_broker_args_with_store_dir(
     let Some(capability) = load_parent_broker_capability()? else {
         return Ok(None);
     };
-    let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
-        return Ok(None);
+    let profile_name = if let Some(selector) = selector_override {
+        if selector.sandbox != sandbox_name {
+            return Err(format!(
+                "broker launcher targets sandbox '{}' but current sandbox is '{}'",
+                selector.sandbox, sandbox_name
+            ));
+        }
+        selector.profile.clone()
+    } else {
+        let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
+            return Ok(None);
+        };
+        profile_name
+            .into_string()
+            .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?
     };
-    let profile_name = profile_name
-        .into_string()
-        .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?;
 
     let record_path = child_broker_record_path_with_override(trusted_record_override)?;
     let store = record_path.parent().ok_or_else(|| {
@@ -1262,17 +1326,22 @@ fn child_broker_args_with_store_dir(
 
 fn load_trusted_child_profile(
     host_project_root: &str,
+    selector_override: Option<&BrokerLaunchSelector>,
     trusted_record_override: Option<&std::path::Path>,
 ) -> Result<Option<broker::BrokerSpawnableProfile>, String> {
     let Some(capability) = load_parent_broker_capability()? else {
         return Ok(None);
     };
-    let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
-        return Ok(None);
+    let profile_name = if let Some(selector) = selector_override {
+        selector.profile.clone()
+    } else {
+        let Some(profile_name) = std::env::var_os(BROKER_CHILD_PROFILE_ENV) else {
+            return Ok(None);
+        };
+        profile_name
+            .into_string()
+            .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?
     };
-    let profile_name = profile_name
-        .into_string()
-        .map_err(|_| format!("{BROKER_CHILD_PROFILE_ENV} must be valid UTF-8"))?;
     let record_path = child_broker_record_path_with_override(trusted_record_override)?;
     let store = record_path.parent().ok_or_else(|| {
         format!(
@@ -1635,10 +1704,12 @@ fn run() -> i32 {
     let mut extra_args = Vec::new();
     let mut config_dynamic_binds = config.dynamic_binds.clone();
     let broker_parent_capability_present = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV).is_some();
-    let broker_profile_present = std::env::var_os(BROKER_CHILD_PROFILE_ENV).is_some();
+    let broker_profile_present =
+        cli.broker_launch.is_some() || std::env::var_os(BROKER_CHILD_PROFILE_ENV).is_some();
     if broker_profile_present {
         match child_broker_args(
             &config.name,
+            cli.broker_launch.as_ref(),
             &sandbox_dir,
             &sandbox_dest,
             &host_xdg_runtime_dir,
@@ -1646,9 +1717,10 @@ fn run() -> i32 {
             Some(&sandbox_dir),
         ) {
             Ok(Some(args)) => {
-                let profile = load_trusted_child_profile(&sandbox_dir, None)
-                    .ok()
-                    .flatten();
+                let profile =
+                    load_trusted_child_profile(&sandbox_dir, cli.broker_launch.as_ref(), None)
+                        .ok()
+                        .flatten();
                 config_dynamic_binds = filter_child_overlay_project_bind(
                     &config.dynamic_binds,
                     &runtime_vars,
@@ -1708,6 +1780,12 @@ fn run() -> i32 {
             sandbox_xdg_runtime_dir.clone(),
         ]);
     }
+
+    extra_args.extend([
+        "--setenv".to_string(),
+        CLOISTER_CONFIG_PATH_ENV.to_string(),
+        config_path.clone(),
+    ]);
 
     // ZDOTDIR (only forward host ZDOTDIR when host shell config is enabled)
     if config.shell_name == "zsh" && config.shell_host_config {
@@ -2120,26 +2198,27 @@ fn run() -> i32 {
     }
 
     // --- 10. Parse command args and build run_cmd ---
-    let (run_cmd, is_interactive) = match prepare_run_cmd(&config, &cli.sandbox_args) {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("{prefix}: {e}");
-            process::exit(cleanup_and_return_exit_code(
-                CleanupState {
-                    ssh_handle: ssh_filter_handle,
-                    dbus_proxy,
-                    pulse_bridge,
-                    wayland_socket: wayland_socket_path,
-                    machine_id_path,
-                    proc_privacy_state,
-                    anonymize_file_paths,
-                    flatpak_portal_state,
-                    broker_session_record_path,
-                },
-                2,
-            ));
-        }
-    };
+    let (run_cmd, is_interactive) =
+        match prepare_run_cmd(&config, &cli.sandbox_args, cli.broker_launch.as_ref()) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("{prefix}: {e}");
+                process::exit(cleanup_and_return_exit_code(
+                    CleanupState {
+                        ssh_handle: ssh_filter_handle,
+                        dbus_proxy,
+                        pulse_bridge,
+                        wayland_socket: wayland_socket_path,
+                        machine_id_path,
+                        proc_privacy_state,
+                        anonymize_file_paths,
+                        flatpak_portal_state,
+                        broker_session_record_path,
+                    },
+                    2,
+                ));
+            }
+        };
 
     // --- 11. Spawn bwrap ---
     let run_cmd = build_session_run_cmd(&config, run_cmd, is_interactive);
@@ -2403,6 +2482,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
     let mut parsed = CliArgs {
         config_path: None,
         after_netns: false,
+        broker_launch: None,
         sandbox_args: Vec::new(),
     };
     let mut i = 1;
@@ -2426,6 +2506,24 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             "--after-netns" => {
                 set_after_netns(&mut parsed)?;
             }
+            "--broker-launch-profile" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(
+                        "cloister-sandbox: --broker-launch-profile requires a profile".to_string(),
+                    );
+                }
+                set_broker_launch_profile(&mut parsed, args[i].clone())?;
+            }
+            "--broker-launch-sandbox" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(
+                        "cloister-sandbox: --broker-launch-sandbox requires a sandbox".to_string(),
+                    );
+                }
+                set_broker_launch_sandbox(&mut parsed, args[i].clone())?;
+            }
             "--" => {
                 past_separator = true;
             }
@@ -2443,6 +2541,15 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
             }
         }
         i += 1;
+    }
+
+    if let Some(selector) = parsed.broker_launch.as_ref() {
+        if selector.profile.is_empty() || selector.sandbox.is_empty() {
+            return Err(
+                "cloister-sandbox: --broker-launch-profile and --broker-launch-sandbox must be passed together"
+                    .to_string(),
+            );
+        }
     }
 
     Ok(parsed)
@@ -2900,6 +3007,7 @@ mod tests {
         assert!(
             child_broker_args_with_store_dir(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000-child",
@@ -2924,6 +3032,102 @@ mod tests {
             std::env::set_var("XDG_RUNTIME_DIR", value);
         } else {
             std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_accepts_cli_selector_without_legacy_profile_env() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let session = broker_session_fixture();
+        let trusted_record = temp_test_dir("child-broker-cli-selector").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+
+        let selector = BrokerLaunchSelector {
+            profile: "overlay".to_string(),
+            sandbox: "worker".to_string(),
+        };
+
+        assert!(
+            child_broker_args_with_store_dir(
+                "worker",
+                Some(&selector),
+                "/workspace/project",
+                "/workspace/project",
+                "/run/user/1000-child",
+                Some(trusted_record.as_path()),
+                Some("/workspace/project"),
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+        }
+
+        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
+    }
+
+    #[test]
+    fn apply_child_broker_profile_rejects_cli_selector_for_other_sandbox() {
+        let _guard = env_lock_guard();
+        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
+        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
+        let session = broker_session_fixture();
+        let trusted_record =
+            temp_test_dir("child-broker-cli-selector-sandbox").join("session.json");
+        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
+        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
+        std::env::set_var(
+            BROKER_PARENT_CAPABILITY_ENV,
+            serde_json::to_string(&broker::BrokerParentCapability::from(&session)).unwrap(),
+        );
+        std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
+
+        let selector = BrokerLaunchSelector {
+            profile: "overlay".to_string(),
+            sandbox: "dev".to_string(),
+        };
+
+        let err = child_broker_args_with_store_dir(
+            "worker",
+            Some(&selector),
+            "/workspace/project",
+            "/workspace/project",
+            "/run/user/1000-child",
+            Some(trusted_record.as_path()),
+            Some("/workspace/project"),
+        )
+        .unwrap_err();
+        assert!(err.contains("broker launcher targets sandbox 'dev'"));
+        assert!(err.contains("current sandbox is 'worker'"));
+
+        if let Some(value) = original_capability {
+            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
+        }
+        if let Some(value) = original_profile {
+            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
+        } else {
+            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
         }
 
         let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
@@ -3154,6 +3358,7 @@ mod tests {
         assert!(
             child_broker_args_with_store_dir(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000-child",
@@ -3201,6 +3406,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000-child",
@@ -3247,6 +3453,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000-child",
@@ -3304,6 +3511,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000-child",
@@ -3352,6 +3560,7 @@ mod tests {
 
         let args = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000-child",
@@ -3410,6 +3619,7 @@ mod tests {
 
         let err = child_broker_args(
             "worker",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000",
@@ -3450,6 +3660,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/workspace/other-project",
             "/workspace/other-project",
             "/run/user/1000",
@@ -3503,6 +3714,7 @@ mod tests {
         assert!(
             child_broker_args_with_store_dir(
                 "worker",
+                None,
                 "/home/alice/src/project",
                 "/home/ubuntu/src/project",
                 "/run/user/1000-child",
@@ -3556,6 +3768,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/tmp/other-project",
             "/home/ubuntu/src/project",
             "/run/user/1000-child",
@@ -3609,6 +3822,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/tmp/unrelated-project",
             "/home/ubuntu/src/project",
             "/run/user/1000-child",
@@ -3662,6 +3876,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "worker",
+            None,
             "/home/alice/src/other-project",
             "/home/ubuntu/src/project",
             "/run/user/1000-child",
@@ -3713,6 +3928,7 @@ mod tests {
         assert!(
             child_broker_args_with_store_dir(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000-child",
@@ -3765,6 +3981,7 @@ mod tests {
         assert_eq!(
             child_broker_args_with_store_dir(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000-child",
@@ -3874,6 +4091,7 @@ mod tests {
         assert!(
             child_broker_args(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000",
@@ -3907,6 +4125,7 @@ mod tests {
         assert!(
             child_broker_args(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000",
@@ -3938,6 +4157,7 @@ mod tests {
         assert!(
             child_broker_args(
                 "worker",
+                None,
                 "/workspace/project",
                 "/workspace/project",
                 "/run/user/1000",
@@ -3977,6 +4197,7 @@ mod tests {
 
         let err = child_broker_args_with_store_dir(
             "dev",
+            None,
             "/workspace/project",
             "/workspace/project",
             "/run/user/1000-child",
@@ -4457,9 +4678,107 @@ mod tests {
     }
 
     #[test]
+    fn broker_launcher_parse_strips_private_selector_from_child_argv() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-launch-profile",
+            "ephemeral",
+            "--broker-launch-sandbox",
+            "worker",
+            "--",
+            "git",
+            "status",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+
+        assert_eq!(parsed.sandbox_args, vec!["git", "status"]);
+    }
+
+    #[test]
+    fn broker_launcher_parse_rejects_missing_profile_value() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-launch-profile",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "cloister-sandbox: --broker-launch-profile requires a profile"
+        );
+    }
+
+    #[test]
+    fn broker_launcher_parse_rejects_missing_sandbox_value() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-launch-sandbox",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "cloister-sandbox: --broker-launch-sandbox requires a sandbox"
+        );
+    }
+
+    #[test]
+    fn broker_launcher_parse_rejects_incomplete_selector() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-launch-profile",
+            "ephemeral",
+            "--",
+            "git",
+            "status",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "cloister-sandbox: --broker-launch-profile and --broker-launch-sandbox must be passed together"
+        );
+    }
+
+    #[test]
+    fn broker_launcher_prepare_run_cmd_rejects_empty_command_argv() {
+        let config = config_with_flags(false, false, None, None, None, None, false);
+        let selector = BrokerLaunchSelector {
+            profile: "overlay".to_string(),
+            sandbox: "worker".to_string(),
+        };
+        let result = prepare_run_cmd(&config, &[], Some(&selector));
+
+        assert_eq!(result, Err("broker launcher requires a command argv"),);
+    }
+
+    #[test]
+    fn broker_launcher_prepare_run_cmd_rejects_c_shorthand() {
+        let config = config_with_flags(false, false, None, None, None, None, false);
+        let selector = BrokerLaunchSelector {
+            profile: "overlay".to_string(),
+            sandbox: "worker".to_string(),
+        };
+        let result = prepare_run_cmd(&config, &s(&["-c", "echo", "hello"]), Some(&selector));
+
+        assert_eq!(
+            result,
+            Err("broker launcher does not support -c; pass the command argv directly"),
+        );
+    }
+
+    #[test]
     fn prepare_run_cmd_rejects_bare_c_flag() {
         let config = config_with_flags(false, false, None, None, None, None, false);
-        let result = prepare_run_cmd(&config, &s(&["-c"]));
+        let result = prepare_run_cmd(&config, &s(&["-c"]), None);
         assert_eq!(result, Err("`-c` requires a command"));
     }
 
@@ -4482,7 +4801,7 @@ mod tests {
         }))
         .unwrap();
 
-        let (run_cmd, interactive) = prepare_run_cmd(&config, &s(&["--shell"])).unwrap();
+        let (run_cmd, interactive) = prepare_run_cmd(&config, &s(&["--shell"]), None).unwrap();
         assert_eq!(run_cmd, vec!["/nix/store/xxx-zsh/bin/zsh", "-i"]);
         assert!(interactive);
     }

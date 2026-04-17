@@ -177,12 +177,14 @@ test-changed:
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
 				add_check test-cloister-worker-broker; \
+				add_runtime_check test-runtime-worker-broker; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \
 				;; \
 			modules/cloister/_assertions.nix) \
 				add_check test-cloister-sandbox-core; \
 				add_check test-cloister-worker-broker; \
+				add_runtime_check test-runtime-worker-broker; \
 				add_dbus_checks \
 				;; \
 			modules/cloister/_sandbox.nix) \
@@ -191,6 +193,7 @@ test-changed:
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
 				add_check test-cloister-worker-broker; \
+				add_runtime_check test-runtime-worker-broker; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \
 				;; \
@@ -199,6 +202,7 @@ test-changed:
 				add_runtime_check test-runtime-sandbox-core; \
 				add_check test-cloister-rendered-config; \
 				add_check test-cloister-worker-broker; \
+				add_runtime_check test-runtime-worker-broker; \
 				add_dbus_checks; \
 				add_check test-cloister-image-store; \
 				add_runtime_check test-runtime-image-store \

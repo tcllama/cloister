@@ -266,6 +266,137 @@ let
       sandboxes.worker = { };
     };
   };
+
+  aliasCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        registry.aliases.clb-ephemeral = "echo existing";
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
+
+  functionCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        registry.functions.clb-ephemeral = ''
+          echo existing
+        '';
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
+
+  commandCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        registry.commands = [ "clb-ephemeral" ];
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
+
+  extraCommandCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        registry.extraCommands = [ "clb-ephemeral" ];
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
+
+  disabledLauncherCollisionIgnored = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        registry.commands = [ "clb-ephemeral" ];
+        workerBroker = {
+          enable = false;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
+
+  crossSandboxGeneratedLauncherCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes = {
+        dev = {
+          workerBroker = {
+            enable = true;
+            spawnableProfiles.ephemeral = {
+              sandbox = "worker-a";
+              workspace.mode = "project-overlay";
+            };
+          };
+        };
+        ops = {
+          workerBroker = {
+            enable = true;
+            spawnableProfiles.ephemeral = {
+              sandbox = "worker-b";
+              workspace.mode = "project-overlay";
+            };
+          };
+        };
+        worker-a = { };
+        worker-b = { };
+      };
+    };
+  };
+
+  unsafeProfileKey = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        workerBroker = {
+          enable = true;
+          spawnableProfiles."bad/name" = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker = { };
+    };
+  };
 in
 checks.mkCheck "test-cloister-worker-broker" [
   (checks.expectAssertionMessage "worker broker requires at least one spawnable profile"
@@ -328,5 +459,32 @@ checks.mkCheck "test-cloister-worker-broker" [
   (checks.expectAssertionMessage "worker broker delegated mount keys reject newlines"
     newlineReferencedDelegatedMountKey.assertions
     "cannot contain variable expansions ($) or newlines"
+  )
+  (checks.expectAssertionMessage "worker broker generated launchers cannot collide with aliases"
+    aliasCollision.assertions
+    "generated worker broker launcher names collide with registry.aliases: clb-ephemeral"
+  )
+  (checks.expectAssertionMessage "worker broker generated launchers cannot collide with functions"
+    functionCollision.assertions
+    "generated worker broker launcher names collide with registry.functions: clb-ephemeral"
+  )
+  (checks.expectAssertionMessage "worker broker generated launchers cannot collide with commands"
+    commandCollision.assertions
+    "generated worker broker launcher names collide with registry.commands: clb-ephemeral"
+  )
+  (checks.expectAssertionMessage "worker broker generated launchers cannot collide with extraCommands"
+    extraCommandCollision.assertions
+    "generated worker broker launcher names collide with registry.extraCommands: clb-ephemeral"
+  )
+  (checks.expectFalse "disabled worker broker ignores generated launcher collisions" (
+    builtins.any (assertion: !assertion.assertion) disabledLauncherCollisionIgnored.assertions
+  ))
+  (checks.expectFalse "generated launcher names stay sandbox-local across sandboxes" (
+    builtins.any (assertion: !assertion.assertion) crossSandboxGeneratedLauncherCollision.assertions
+  ))
+  (checks.expectAssertionMessage
+    "worker broker profile keys must produce safe generated launcher names"
+    unsafeProfileKey.assertions
+    "workerBroker.spawnableProfiles keys must produce safe generated launcher names: bad/name"
   )
 ]

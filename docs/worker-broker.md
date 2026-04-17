@@ -14,6 +14,15 @@ The parent sandbox gets an opaque capability token in env, while authoritative l
 
 Worker broker also requires `XDG_RUNTIME_DIR` so the parent launch can register its trusted session record on the host.
 
+When `workerBroker.enable = true`, Cloister adds one launcher per spawnable profile to the parent sandbox `PATH`: `clb-<profile>`.
+Those launchers are available by plain name inside the parent sandbox, so run them as:
+
+```sh
+clb-<profile> <command> [args...]
+```
+
+The launcher selects the configured child sandbox and passes the command argv directly. `-c` is rejected for broker launches.
+
 ## Trust Model
 
 - parent sandboxes receive an opaque capability token in env
@@ -95,7 +104,7 @@ One simple manual test is:
 
 1. Start in a project checkout managed by the `dev` sandbox.
 1. Enter the parent sandbox normally.
-1. From inside that sandbox, select a worker-broker profile and launch the configured child sandbox command. For example, set `CLOISTER_BROKER_CHILD_PROFILE=overlay` and then invoke the child launcher for the configured `worker` sandbox. The exact wrapper name depends on how this repo exposes the sandbox command, but the profile-selection env var is required.
+1. From inside that sandbox, run the generated launcher for the profile you want. For example, `clb-overlay <command> [args...]` launches the configured child sandbox for the `overlay` profile.
 1. In the child sandbox, verify that:
    - the child is running in the `worker` sandbox
    - the project root matches the same project

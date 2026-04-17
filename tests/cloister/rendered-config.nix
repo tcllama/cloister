@@ -203,6 +203,37 @@ let
     };
   };
 
+  workerBrokerDisabledEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        workerBroker = {
+          enable = false;
+          spawnableProfiles.ephemeral = {
+            sandbox = "worker";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+      sandboxes.worker.preset = "hardened";
+    };
+  };
+
+  sameSandboxWorkerBrokerEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        workerBroker = {
+          enable = true;
+          spawnableProfiles.local = {
+            sandbox = "dev";
+            workspace.mode = "project-overlay";
+          };
+        };
+      };
+    };
+  };
+
   sandboxConfig = eval.config.cloister._internal.sandboxConfigs.dev;
   plainConfig = plainEval.config.cloister._internal.sandboxConfigs.plain;
   hostConfigOff = hostConfigOffEval.config.cloister._internal.sandboxConfigs.dev;
@@ -221,6 +252,18 @@ let
   packagesConfig = packagesEval.config.cloister._internal.sandboxConfigs.dev;
   packagesStaticArgs = builtins.toJSON packagesConfig.static_bwrap_args;
   workerBrokerConfig = workerBrokerEval.config.cloister._internal.sandboxConfigs.dev;
+  workerBrokerChildConfig = workerBrokerEval.config.cloister._internal.sandboxConfigs.worker;
+  workerBrokerDisabledConfig = workerBrokerDisabledEval.config.cloister._internal.sandboxConfigs.dev;
+  workerBrokerInternal = workerBrokerEval.config.cloister._internal.sandboxInternals.dev;
+  sameSandboxWorkerBrokerInternal =
+    sameSandboxWorkerBrokerEval.config.cloister._internal.sandboxInternals.dev;
+  inherit (workerBrokerInternal) workerBrokerLauncherPackage;
+  workerBrokerParentPackage = builtins.elemAt workerBrokerEval.config.home.packages 0;
+  workerBrokerChildPackage = builtins.elemAt workerBrokerEval.config.home.packages 1;
+  workerBrokerParentWrapperText = builtins.readFile "${workerBrokerParentPackage}/bin/cl-dev";
+  workerBrokerInstalledLauncherText = builtins.readFile "${workerBrokerLauncherPackage}/bin/clb-ephemeral";
+  sameSandboxWorkerBrokerLauncherText =
+    sameSandboxWorkerBrokerInternal.workerBrokerLauncherTexts.clb-local;
 
   plainStaticArgs = builtins.toJSON plainConfig.static_bwrap_args;
   plainDynamicBinds = builtins.toJSON plainConfig.dynamic_binds;
@@ -333,6 +376,9 @@ checks.mkCheck "test-cloister-rendered-config" [
     builtins.toJSON validatorsConfig.static_bwrap_args
   ))
   (checks.expectEq "worker broker enable renders" true workerBrokerConfig.worker_broker.enable)
+  (checks.expectEq "disabled worker broker does not render generated launchers" { }
+    workerBrokerDisabledConfig.worker_broker.generated_launchers
+  )
   (checks.expectEq "worker broker ephemeral sandbox renders" "worker"
     workerBrokerConfig.worker_broker.spawnable_profiles.ephemeral.sandbox
   )
@@ -344,6 +390,90 @@ checks.mkCheck "test-cloister-rendered-config" [
   )
   (checks.expectEq "worker broker delegated mount access renders" "rw"
     workerBrokerConfig.worker_broker.spawnable_profiles.project.delegated_per_dir_mounts.worktrees
+  )
+  (checks.expectEq "worker broker generated launcher profile renders" "ephemeral"
+    workerBrokerConfig.worker_broker.generated_launchers.clb-ephemeral.profile
+  )
+  (checks.expectEq "worker broker generated launcher sandbox renders" "worker"
+    workerBrokerConfig.worker_broker.generated_launchers.clb-ephemeral.sandbox
+  )
+  (checks.expectEq "worker broker generated launcher metadata is keyed by launcher name" [
+    "clb-ephemeral"
+    "clb-project"
+  ] (builtins.attrNames workerBrokerConfig.worker_broker.generated_launchers))
+  (checks.expectEq "worker broker parent sandbox renders generated launchers" [
+    "clb-ephemeral"
+    "clb-project"
+  ] (builtins.attrNames workerBrokerConfig.worker_broker.generated_launchers))
+  (checks.expectEq "worker broker child sandbox does not render generated launchers" { }
+    workerBrokerChildConfig.worker_broker.generated_launchers
+  )
+  (checks.expectEq "worker broker package exposes launcher scripts by name" [
+    "clb-ephemeral"
+    "clb-project"
+  ] (builtins.attrNames workerBrokerInternal.workerBrokerLauncherTexts))
+  (checks.expectTrue "worker broker launcher package installs generated launcher" (
+    builtins.pathExists "${workerBrokerLauncherPackage}/bin/clb-ephemeral"
+  ))
+  (checks.expectFalse "worker broker parent package does not install generated launcher" (
+    builtins.pathExists "${workerBrokerParentPackage}/bin/clb-ephemeral"
+  ))
+  (checks.expectFalse "worker broker child package does not install parent launcher" (
+    builtins.pathExists "${workerBrokerChildPackage}/bin/clb-ephemeral"
+  ))
+  (checks.expectContains "worker broker launcher is a real shell script" "#!"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher requires exact usage guard"
+    ''echo "clb-ephemeral: expected a command to run" >&2''
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher exits with shell usage code" "exit 2"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher requires a command argv" ''if [ "$#" -eq 0 ]; then''
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher invokes cloister-sandbox directly"
+    ''bin/cloister-sandbox \''
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker wrapper exports runtime config path env"
+    "CLOISTER_CONFIG_PATH"
+    workerBrokerParentWrapperText
+  )
+  (checks.expectContains "worker broker launcher passes target config path" "--config /nix/store/"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher passes broker launch profile"
+    "--broker-launch-profile ephemeral"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "worker broker launcher passes broker launch sandbox"
+    "--broker-launch-sandbox worker"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectContains "same-sandbox worker broker launcher reads config path from runtime env"
+    "CLOISTER_CONFIG_PATH:?CLOISTER_CONFIG_PATH must be set"
+    sameSandboxWorkerBrokerLauncherText
+  )
+  (checks.expectNotContains "same-sandbox worker broker launcher does not bake config store path"
+    "--config /nix/store/"
+    sameSandboxWorkerBrokerLauncherText
+  )
+  (checks.expectContains "same-sandbox worker broker launcher still targets current sandbox"
+    "--broker-launch-sandbox dev"
+    sameSandboxWorkerBrokerLauncherText
+  )
+  (checks.expectContains "worker broker launcher forwards raw argv after separator" ''-- "$@"''
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectNotContains "worker broker launcher does not use obsolete child profile env"
+    "CLOISTER_BROKER_CHILD_PROFILE"
+    workerBrokerInstalledLauncherText
+  )
+  (checks.expectNotContains "worker broker launcher does not force shell command mode" "-c "
+    workerBrokerInstalledLauncherText
   )
   (checks.expectEq "worker broker available worktrees path renders" "/local/worktrees/dev"
     workerBrokerConfig.worker_broker.available_delegated_per_dir_mounts.worktrees.path

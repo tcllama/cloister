@@ -342,7 +342,55 @@ let
     else
       null;
 
-  envAttrs = sCfg.sandbox.env // guiEnv // portalEnv // computedEnv // noHostConfigEnv;
+  workerBrokerLauncherTexts = lib.mapAttrs (
+    launcherName: launcher:
+    let
+      launcherConfigArg =
+        if launcher.sandbox == name then
+          ''"''${CLOISTER_CONFIG_PATH:?CLOISTER_CONFIG_PATH must be set}"''
+        else
+          lib.escapeShellArg config.cloister._internal.sandboxInternals.${launcher.sandbox}.configJsonPath;
+    in
+    ''
+      set -eu
+
+      if [ "$#" -eq 0 ]; then
+        echo "${launcherName}: expected a command to run" >&2
+        exit 2
+      fi
+
+      exec ${cloister-sandbox}/bin/cloister-sandbox \
+        --config ${launcherConfigArg} \
+        --broker-launch-profile ${lib.escapeShellArg launcher.profile} \
+        --broker-launch-sandbox ${lib.escapeShellArg launcher.sandbox} \
+        -- "$@"
+    ''
+  ) renderedWorkerBroker.generated_launchers;
+
+  workerBrokerLauncherPackage =
+    if workerBrokerLauncherTexts == { } then
+      null
+    else
+      pkgs.runCommand "cloister-worker-broker-launchers-${name}" { } ''
+        mkdir -p "$out/bin"
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (launcherName: launcherText: ''
+            script_path=${pkgs.writeShellScript "${launcherName}" launcherText}
+            cp "$script_path" "$out/bin/${launcherName}"
+            chmod 0555 "$out/bin/${launcherName}"
+          '') workerBrokerLauncherTexts
+        )}
+      '';
+
+  workerBrokerRenderedLauncherTexts = lib.mapAttrs (_: text: text) workerBrokerLauncherTexts;
+
+  baseEnvAttrs = sCfg.sandbox.env // guiEnv // portalEnv // computedEnv // noHostConfigEnv;
+
+  envAttrs =
+    baseEnvAttrs
+    // lib.optionalAttrs (workerBrokerLauncherPackage != null) {
+      PATH = "${lib.makeBinPath [ workerBrokerLauncherPackage ]}:${baseEnvAttrs.PATH}";
+    };
 
   symlinkTargets = map (entry: entry.target) (sCfg.sandbox.symlinks ++ sCfg.sandbox.extraSymlinks);
 
@@ -466,6 +514,7 @@ let
         mkdir -p $out/bin
         makeWrapper ${cloister-sandbox}/bin/cloister-sandbox $out/bin/cl-${name} \
           --set-default CLOISTER_BUILD_REV ${lib.escapeShellArg buildRevision} \
+          --set-default CLOISTER_CONFIG_PATH ${lib.escapeShellArg configJsonPath} \
           --add-flags "--config ${configJsonPath} --"
       '';
 in
@@ -473,7 +522,11 @@ in
   inherit configJsonPath package;
   sandboxConfig = builtins.fromJSON (builtins.unsafeDiscardStringContext sandboxConfigJsonBase);
   internal = {
-    inherit pipewirePulseOnlyConfText pipewirePulseWrapperText;
+    inherit configJsonPath;
+    inherit pipewirePulseOnlyConfText;
+    inherit pipewirePulseWrapperText;
+    inherit workerBrokerLauncherPackage;
+    workerBrokerLauncherTexts = workerBrokerRenderedLauncherTexts;
   };
   imageStoreInfo =
     if imageStoreMode then
