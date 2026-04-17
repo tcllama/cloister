@@ -1,6 +1,7 @@
 {
   checks,
   hm,
+  lib,
   ...
 }:
 let
@@ -54,8 +55,14 @@ let
     imports = [ ../../examples/chromium.nix ];
   };
 
+  workerBroker = hm {
+    cloister.enable = true;
+    imports = [ ../../examples/worker-broker.nix ];
+  };
+
   shellCustomRcConfig = shellCustomRc.config.cloister._internal.sandboxConfigs.dev;
   shellCustomRcStaticArgs = builtins.toJSON shellCustomRcConfig.static_bwrap_args;
+  packageNames = packages: map lib.getName packages;
 in
 checks.mkCheck "test-cloister-examples" [
   (checks.expectEq "developer example sets preset" "developer"
@@ -92,4 +99,79 @@ checks.mkCheck "test-cloister-examples" [
   (checks.expectEq "chromium example wraps chromium" [
     "chromium"
   ] chromium.config.cloister.sandboxes.chromium.registry.commands)
+  (checks.expectEq "worker broker example enables broker" true
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.enable
+  )
+  (checks.expectEq "worker broker example enables dbus for dev" true
+    workerBroker.config.cloister.sandboxes.dev.dbus.enable
+  )
+  (checks.expectEq "worker broker example enables notification portal for dev" true
+    workerBroker.config.cloister.sandboxes.dev.dbus.portal.notifications
+  )
+  (checks.expectEq "worker broker example maps overlay profile to overlay worker" "worker-overlay"
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.overlay.sandbox
+  )
+  (checks.expectEq "worker broker example uses overlay workspace mode" "project-overlay"
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.overlay.workspace.mode
+  )
+  (checks.expectEq "worker broker example maps rw profile to rw worker" "worker-rw"
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.rw.sandbox
+  )
+  (checks.expectEq "worker broker example uses rw workspace mode" "project-rw"
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.rw.workspace.mode
+  )
+  (checks.expectContains "worker broker example preserves fd from developer base" "fd" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.dev.extraPackages)
+  ))
+  (checks.expectContains "worker broker example preserves nil from developer base" "nil" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.dev.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares nodejs on dev" "nodejs" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.dev.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares nodejs on overlay worker" "nodejs" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.worker-overlay.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares nodejs on rw worker" "nodejs" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.worker-rw.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares neovim on dev" "neovim" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.dev.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares neovim on overlay worker" "neovim" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.worker-overlay.extraPackages)
+  ))
+  (checks.expectContains "worker broker example shares neovim on rw worker" "neovim" (
+    builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.worker-rw.extraPackages)
+  ))
+  (checks.expectEq "worker broker example enables ssh for rw worker" true
+    workerBroker.config.cloister.sandboxes.worker-rw.ssh.enable
+  )
+  (checks.expectEq "worker broker example disables host config for rw worker" false
+    workerBroker.config.cloister.sandboxes.worker-rw.shell.hostConfig
+  )
+  (checks.expectEq "worker broker example enables git for rw worker" true
+    workerBroker.config.cloister.sandboxes.worker-rw.git.enable
+  )
+  (checks.expectEq "worker broker example disables host config for overlay worker" false
+    workerBroker.config.cloister.sandboxes.worker-overlay.shell.hostConfig
+  )
+  (checks.expectEq "worker broker example disables ssh for overlay worker" false
+    workerBroker.config.cloister.sandboxes.worker-overlay.ssh.enable
+  )
+  (checks.expectEq "worker broker example disables git for overlay worker" false
+    workerBroker.config.cloister.sandboxes.worker-overlay.git.enable
+  )
+  (checks.expectEq "worker broker example hardens overlay worker" "hardened"
+    workerBroker.config.cloister.sandboxes.worker-overlay.preset
+  )
+  (checks.expectEq "worker broker example disables validators for overlay worker" false
+    workerBroker.config.cloister.sandboxes.worker-overlay.validators.enable
+  )
+  (checks.expectEq "worker broker example hardens rw worker" "hardened"
+    workerBroker.config.cloister.sandboxes.worker-rw.preset
+  )
+  (checks.expectEq "worker broker example disables validators for rw worker" false
+    workerBroker.config.cloister.sandboxes.worker-rw.validators.enable
+  )
 ]
