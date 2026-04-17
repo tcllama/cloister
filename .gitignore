@@ -7,4 +7,5 @@ target/
 
 # direnv
 .direnv/
+.worktrees/
 docs/superpowers
