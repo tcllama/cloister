@@ -41,6 +41,14 @@ in
       }
     '';
 
+  renderOutsideCommand =
+    {
+      name,
+      sandbox,
+      wrappedCommand,
+    }:
+    "alias ${name}=${lib.escapeShellArg "__cloister_run_${sandbox} -i ${wrappedCommand}"}";
+
   renderOutsideRunner = sandbox: ''
     __cloister_run_${sandbox}() {
       _cloister_args=()

@@ -8,7 +8,7 @@ let
     name: sCfg:
     let
       regCfg = sCfg.registry;
-      allCommands = regCfg.commands ++ regCfg.extraCommands;
+      allCommands = regCfg.commands ++ regCfg.interactiveCommands ++ regCfg.extraCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
       wrappableAliasNames = lib.filter (n: !builtins.elem n regCfg.noWrap) aliasNames;
@@ -30,6 +30,7 @@ let
       aliasCommandOverlap = lib.intersectLists aliasNames allCommands;
       functionCommandOverlap = lib.intersectLists functionNames allCommands;
       aliasFunctionOverlap = lib.intersectLists aliasNames functionNames;
+      commandModeOverlap = lib.intersectLists regCfg.commands regCfg.interactiveCommands;
     in
     [
       {
@@ -57,6 +58,10 @@ let
         message = "cloister.sandboxes.${name}.registry: names defined as both function and command: ${lib.concatStringsSep ", " functionCommandOverlap}";
       }
       {
+        assertion = commandModeOverlap == [ ];
+        message = "cloister.sandboxes.${name}.registry: names defined as both command and interactiveCommand: ${lib.concatStringsSep ", " commandModeOverlap}";
+      }
+      {
         assertion = invalidOutsideAliasValues == [ ];
         message = "cloister.sandboxes.${name}.registry: aliases wrapped outside the sandbox must be argv-safe (letters, numbers, /, ., _, -, and space separators only): ${lib.concatStringsSep ", " invalidOutsideAliasValues}. Use registry.functions for shell syntax, quoting, pipes, redirects, variable expansion, or put the alias in registry.noWrap.";
       }
@@ -67,7 +72,7 @@ let
     _name: sCfg:
     let
       regCfg = sCfg.registry;
-      allCommands = regCfg.commands ++ regCfg.extraCommands;
+      allCommands = regCfg.commands ++ regCfg.interactiveCommands ++ regCfg.extraCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
 

@@ -24,6 +24,7 @@ pub struct SandboxConfig {
     pub bwrap_path: String,
     pub shell_bin: String,
     pub shell_interactive_args: Vec<String>,
+    pub wrapped_command_shell_args: Vec<String>,
     pub shell_name: String,
     /// Command to run when no arguments are given. If null, launches interactive shell.
     #[serde(default)]
@@ -180,7 +181,7 @@ pub struct WorkerBrokerConfig {
     pub available_delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratedLauncher {
     pub profile: String,
@@ -398,6 +399,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
             "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -413,6 +415,8 @@ mod tests {
         let json = minimal_config_json();
         let config: SandboxConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.name, "test");
+        assert_eq!(config.shell_interactive_args, vec!["-i"]);
+        assert_eq!(config.wrapped_command_shell_args, vec!["-i"]);
         assert!(!config.network_enable);
         assert!(!config.wayland_enable);
         assert!(config.pipewire_pulse_wrapper_path.is_none());
@@ -437,6 +441,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "shell_host_config": false,
             "network_enable": true,
@@ -530,6 +535,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -601,6 +607,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -634,6 +641,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -689,6 +697,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "",
             "sandbox_home": "/home/user",
@@ -710,6 +719,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "",
@@ -738,6 +748,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -765,6 +776,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/devuser",
@@ -786,6 +798,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx/bin/bwrap",
             "shell_bin": "/nix/store/xxx/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/",

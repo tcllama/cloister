@@ -7,11 +7,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::broker::BrokerSession;
 
+pub fn broker_runtime_dir(host_runtime_dir: &str) -> PathBuf {
+    Path::new(host_runtime_dir).join("cloister").join("broker")
+}
+
 pub fn session_store_dir(host_runtime_dir: &str) -> PathBuf {
-    Path::new(host_runtime_dir)
-        .join("cloister")
-        .join("broker")
-        .join("sessions")
+    broker_runtime_dir(host_runtime_dir).join("sessions")
+}
+
+pub fn socket_path(host_runtime_dir: &str, token: &str) -> Result<PathBuf, String> {
+    Ok(broker_runtime_dir(host_runtime_dir).join(format!("{}.sock", normalize_token(token)?)))
 }
 
 pub fn write_session_record(base: &Path, record: &BrokerSession) -> Result<(), String> {
@@ -328,6 +333,14 @@ mod tests {
         assert_eq!(
             session_store_dir("/run/user/1000"),
             PathBuf::from("/run/user/1000/cloister/broker/sessions")
+        );
+    }
+
+    #[test]
+    fn socket_path_nests_under_host_runtime_dir() {
+        assert_eq!(
+            socket_path("/run/user/1000", "token-123").unwrap(),
+            PathBuf::from("/run/user/1000/cloister/broker/token-123.sock")
         );
     }
 }

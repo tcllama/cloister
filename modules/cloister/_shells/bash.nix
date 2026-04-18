@@ -8,6 +8,10 @@ in
   package = pkgs.bashInteractive;
   bin = "${pkgs.bashInteractive}/bin/bash";
   interactiveArgs = [ "-l" ];
+  wrappedCommandShellArgs = [
+    "-l"
+    "-i"
+  ];
   shellEnv = "/bin/bash";
   key = "bash";
   command = "bash";
@@ -43,6 +47,7 @@ in
   inherit (posix)
     renderAlias
     renderFunction
+    renderOutsideCommand
     renderOutsideFunction
     renderOutsideRunner
     ;

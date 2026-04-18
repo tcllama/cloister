@@ -8,6 +8,7 @@ in
   package = pkgs.zsh;
   bin = "${pkgs.zsh}/bin/zsh";
   interactiveArgs = [ "-i" ];
+  wrappedCommandShellArgs = [ "-i" ];
   shellEnv = "/bin/zsh";
   key = "zsh";
   command = "zsh";
@@ -48,6 +49,7 @@ in
   inherit (posix)
     renderAlias
     renderFunction
+    renderOutsideCommand
     renderOutsideFunction
     renderOutsideRunner
     ;

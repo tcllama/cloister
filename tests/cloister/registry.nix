@@ -75,6 +75,26 @@ let
     };
   };
 
+  shellInitCommandEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        shell.name = "zsh";
+        registry.interactiveCommands = [ "git" ];
+      };
+    };
+  };
+
+  bashInteractiveCommandEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev = {
+        shell.name = "bash";
+        registry.interactiveCommands = [ "git" ];
+      };
+    };
+  };
+
   aliasFunctionOverlap = hm {
     cloister = {
       enable = true;
@@ -101,6 +121,16 @@ let
       sandboxes.dev.registry = {
         functions.git = "printf hi\\n";
         commands = [ "git" ];
+      };
+    };
+  };
+
+  commandInteractiveOverlap = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.registry = {
+        commands = [ "git" ];
+        interactiveCommands = [ "git" ];
       };
     };
   };
@@ -227,6 +257,11 @@ let
   outsideZsh = eval.config.programs.zsh.initContent;
   outsideBash = multiShellEval.config.programs.bash.initExtra;
   multiArgOutsideZsh = multiArgDefaultEval.config.programs.zsh.initContent;
+  shellInitOutsideZsh = shellInitCommandEval.config.programs.zsh.initContent;
+  bashInteractiveCommandOutside = bashInteractiveCommandEval.config.programs.bash.initExtra;
+  bashInteractiveCommandConfig =
+    bashInteractiveCommandEval.config.cloister._internal.sandboxConfigs.dev;
+  bashInteractiveCommandJson = builtins.toJSON bashInteractiveCommandConfig;
   insideRegistry = eval.config.cloister.sandboxes.dev.registry.rendered.inside;
   multiXdgFiles = multiShellEval.config.xdg.configFile;
   customRcZshInit = customRcZshEval.config.cloister.sandboxes.dev.init.rendered;
@@ -254,6 +289,22 @@ checks.mkCheck "test-cloister-registry" [
   )
   (checks.expectContains "registry wraps normal command" "alias git='__cloister_run_dev -c git'"
     outsideZsh
+  )
+  (checks.expectContains "registry can wrap commands via shell init"
+    "alias git='__cloister_run_dev -i git'"
+    shellInitOutsideZsh
+  )
+  (checks.expectContains "bash config keeps interactive shell args distinct"
+    ''"shell_interactive_args":["-l"]''
+    bashInteractiveCommandJson
+  )
+  (checks.expectContains "bash config exports wrapped command shell args"
+    ''"wrapped_command_shell_args":["-l","-i"]''
+    bashInteractiveCommandJson
+  )
+  (checks.expectContains "bash wrapper renders interactive command alias"
+    "alias git='__cloister_run_dev -i git'"
+    bashInteractiveCommandOutside
   )
   (checks.expectContains "registry preserves multi-arg default command"
     "__cloister_run_browser -c chromium"
@@ -288,6 +339,10 @@ checks.mkCheck "test-cloister-registry" [
   (checks.expectAssertionMessage "function and command overlap is rejected"
     functionCommandOverlap.assertions
     "names defined as both function and command"
+  )
+  (checks.expectAssertionMessage "command and interactiveCommand overlap is rejected"
+    commandInteractiveOverlap.assertions
+    "names defined as both command and interactiveCommand"
   )
   (checks.expectAssertionMessage "invalid sandbox names are rejected" invalidSandboxName.assertions
     "sandbox names must match"

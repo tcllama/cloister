@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self, ExitStatus};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -55,7 +57,10 @@ const SIGTERM_GRACE_SECS: libc::c_uint = 10;
 const BROKER_PARENT_CAPABILITY_ENV: &str = "CLOISTER_BROKER_PARENT_CAPABILITY";
 const BROKER_CHILD_PROFILE_ENV: &str = "CLOISTER_BROKER_CHILD_PROFILE";
 const CLOISTER_CONFIG_PATH_ENV: &str = "CLOISTER_CONFIG_PATH";
+const BROKER_LAUNCHER_PACKAGE_ENV: &str = "CLOISTER_WORKER_BROKER_LAUNCHER_PACKAGE";
+const BROKER_TRUSTED_RECORD_ENV: &str = "CLOISTER_BROKER_TRUSTED_RECORD";
 const BROKER_SESSION_RECORD_CHILD_PATH: &str = "/run/cloister/broker/session.json";
+const BROKER_SOCKET_CHILD_PATH: &str = "/run/cloister/broker/socket";
 
 fn broker_parent_capability_token() -> String {
     let mut bytes = [0_u8; 16];
@@ -125,6 +130,7 @@ struct CliArgs {
     config_path: Option<String>,
     after_netns: bool,
     broker_launch: Option<BrokerLaunchSelector>,
+    broker_trusted_record_path: Option<String>,
     sandbox_args: Vec<String>,
 }
 
@@ -172,6 +178,15 @@ fn set_broker_launch_sandbox(cli: &mut CliArgs, sandbox: String) -> Result<(), S
         );
     }
     selector.sandbox = sandbox;
+    Ok(())
+}
+
+fn set_broker_trusted_record_path(cli: &mut CliArgs, path: String) -> Result<(), String> {
+    if cli.broker_trusted_record_path.replace(path).is_some() {
+        return Err(
+            "cloister-sandbox: --broker-trusted-record may only be passed once".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -337,12 +352,30 @@ struct CleanupState {
     proc_privacy_state: Option<ProcPrivacyState>,
     anonymize_file_paths: Vec<String>,
     flatpak_portal_state: Option<FlatpakPortalState>,
-    broker_session_record_path: Option<std::path::PathBuf>,
+    broker_session_record_path: Option<PathBuf>,
+    broker_listener: Option<BrokerListenerHandle>,
 }
 
 struct ParentBrokerLaunchRegistration {
     env_args: Vec<String>,
-    broker_session_record_path: Option<std::path::PathBuf>,
+    broker_session_record_path: Option<PathBuf>,
+}
+
+struct BrokerListenerHandle {
+    socket_path: PathBuf,
+    stop: Arc<AtomicBool>,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl BrokerListenerHandle {
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = UnixStream::connect(&self.socket_path);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1059,6 +1092,7 @@ fn prepare_run_cmd(
     let run_cmd = env::build_run_cmd(
         &config.shell_bin,
         &config.shell_interactive_args,
+        &config.wrapped_command_shell_args,
         config.default_command.as_deref(),
         &parsed_args,
     );
@@ -1156,16 +1190,295 @@ fn register_parent_broker_launch(
     broker_store::write_session_record(&store, &session)?;
     let record_path = store.join(format!("{}.json", session.token));
 
+    let socket_path = broker_client_socket_path(host_runtime_dir, &session.token)?;
+
     let mut args = vec![
         "--ro-bind".to_string(),
         record_path.to_string_lossy().to_string(),
         BROKER_SESSION_RECORD_CHILD_PATH.to_string(),
+        "--bind".to_string(),
+        socket_path.to_string_lossy().to_string(),
+        BROKER_SOCKET_CHILD_PATH.to_string(),
     ];
     args.extend(parent_broker_env_args(&session)?);
     Ok(Some(ParentBrokerLaunchRegistration {
         env_args: args,
         broker_session_record_path: Some(record_path),
     }))
+}
+
+fn broker_client_socket_path(host_runtime_dir: &str, token: &str) -> Result<PathBuf, String> {
+    broker_store::socket_path(host_runtime_dir, token)
+}
+
+fn broker_launcher_path(
+    generated_launchers: &std::collections::BTreeMap<
+        String,
+        cloister_sandbox_lib::config::GeneratedLauncher,
+    >,
+    profile_name: &str,
+    sandbox_name: &str,
+) -> Result<PathBuf, String> {
+    let launcher_name = generated_launchers
+        .iter()
+        .find_map(|(launcher_name, launcher)| {
+            (launcher.profile == profile_name && launcher.sandbox == sandbox_name)
+                .then_some(launcher_name)
+        })
+        .ok_or_else(|| {
+            format!(
+                "no generated worker broker launcher metadata for profile '{}' and sandbox '{}'",
+                profile_name, sandbox_name
+            )
+        })?;
+    let package = std::env::var(BROKER_LAUNCHER_PACKAGE_ENV)
+        .map_err(|_| format!("{BROKER_LAUNCHER_PACKAGE_ENV} must be set"))?;
+    Ok(Path::new(&package).join("bin").join(launcher_name))
+}
+
+fn send_broker_response(
+    stream: &mut UnixStream,
+    exit_code: i32,
+    error: Option<String>,
+) -> Result<(), String> {
+    let rendered = serde_json::to_vec(&broker::BrokerLaunchResponse { exit_code, error })
+        .map_err(|e| format!("serialize broker launch response: {e}"))?;
+    stream
+        .write_all(&rendered)
+        .map_err(|e| format!("write broker launch response: {e}"))
+}
+
+fn handle_broker_launch_request(
+    request: broker::BrokerLaunchRequest,
+    generated_launchers: &std::collections::BTreeMap<
+        String,
+        cloister_sandbox_lib::config::GeneratedLauncher,
+    >,
+    session_record_path: &Path,
+    host_project_root: &str,
+    capability_payload: &str,
+) -> Result<i32, String> {
+    let store = session_record_path.parent().ok_or_else(|| {
+        format!(
+            "session record path has no parent directory: {}",
+            session_record_path.display()
+        )
+    })?;
+    let token = session_record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "session record path has invalid token filename: {}",
+                session_record_path.display()
+            )
+        })?;
+    let session = broker_store::load_session_record(store, token)?;
+    let profile = lookup_child_profile(&session, &request.profile)?;
+    if profile.sandbox != request.sandbox {
+        return Err(format!(
+            "broker child profile '{}' targets sandbox '{}' but request targeted '{}'",
+            request.profile, profile.sandbox, request.sandbox
+        ));
+    }
+
+    let launcher_path =
+        broker_launcher_path(generated_launchers, &request.profile, &request.sandbox)?;
+
+    let mut cmd = process::Command::new(&launcher_path);
+    cmd.current_dir(broker::resolve_relative_launch_dir(
+        host_project_root,
+        &request.cwd_rel,
+    )?);
+    cmd.args(&request.argv);
+    cmd.env(BROKER_PARENT_CAPABILITY_ENV, capability_payload);
+    cmd.env(
+        BROKER_TRUSTED_RECORD_ENV,
+        session_record_path.to_string_lossy().to_string(),
+    );
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("spawn broker child sandbox '{}': {e}", request.sandbox))?;
+    Ok(status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+fn start_broker_listener(
+    config: &SandboxConfig,
+    host_runtime_dir: &str,
+    host_project_root: &str,
+    session_record_path: &Path,
+) -> Result<BrokerListenerHandle, String> {
+    let token = session_record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "session record path has invalid token filename: {}",
+                session_record_path.display()
+            )
+        })?;
+    let socket_path = broker_client_socket_path(host_runtime_dir, token)?;
+    let parent_dir = socket_path.parent().ok_or_else(|| {
+        format!(
+            "broker socket path has no parent directory: {}",
+            socket_path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent_dir)
+        .map_err(|e| format!("mkdir -p {}: {e}", parent_dir.display()))?;
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).map_err(|e| {
+            format!(
+                "remove stale broker socket '{}': {e}",
+                socket_path.display()
+            )
+        })?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)
+        .map_err(|e| format!("bind broker socket '{}': {e}", socket_path.display()))?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let session_record_path = session_record_path.to_path_buf();
+    let host_project_root = host_project_root.to_string();
+    let capability_payload = serde_json::to_string(&broker::BrokerParentCapability {
+        token: token.to_string(),
+    })
+    .map_err(|e| format!("serialize broker parent capability: {e}"))?;
+    let generated_launchers = config.worker_broker.generated_launchers.clone();
+    let join_handle = thread::spawn(move || {
+        while !stop_thread.load(Ordering::Acquire) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(e) => {
+                    if stop_thread.load(Ordering::Acquire) {
+                        break;
+                    }
+                    eprintln!("cloister-sandbox: accept broker launch request: {e}");
+                    continue;
+                }
+            };
+
+            if stop_thread.load(Ordering::Acquire) {
+                break;
+            }
+
+            let mut payload = Vec::new();
+            if let Err(e) = stream.read_to_end(&mut payload) {
+                let _ = send_broker_response(
+                    &mut stream,
+                    1,
+                    Some(format!("read broker launch request: {e}")),
+                );
+                continue;
+            }
+
+            let request: broker::BrokerLaunchRequest = match serde_json::from_slice(&payload) {
+                Ok(request) => request,
+                Err(e) => {
+                    let _ = send_broker_response(
+                        &mut stream,
+                        1,
+                        Some(format!("parse broker launch request: {e}")),
+                    );
+                    continue;
+                }
+            };
+
+            let result = handle_broker_launch_request(
+                request,
+                &generated_launchers,
+                &session_record_path,
+                &host_project_root,
+                &capability_payload,
+            );
+            match result {
+                Ok(exit_code) => {
+                    let _ = send_broker_response(&mut stream, exit_code, None);
+                }
+                Err(e) => {
+                    let _ = send_broker_response(&mut stream, 1, Some(e));
+                }
+            }
+        }
+    });
+
+    Ok(BrokerListenerHandle {
+        socket_path,
+        stop,
+        join_handle: Some(join_handle),
+    })
+}
+
+fn run_broker_client(
+    _config: &SandboxConfig,
+    selector: &BrokerLaunchSelector,
+    sandbox_args: &[String],
+) -> Result<i32, String> {
+    let record_path = child_broker_record_path_with_override(None)?;
+    let store = record_path.parent().ok_or_else(|| {
+        format!(
+            "session record path has no parent directory: {}",
+            record_path.display()
+        )
+    })?;
+    let token = record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "session record path has invalid token filename: {}",
+                record_path.display()
+            )
+        })?;
+    let session = broker_store::load_session_record(store, token)?;
+    let project_root = session.project_root;
+    let current_dir = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| format!("resolve current dir: {e}"))?;
+    let cwd_rel = current_dir
+        .strip_prefix(&project_root)
+        .map_err(|_| {
+            format!(
+                "worker broker launch cwd '{}' is outside project root '{}'",
+                current_dir.display(),
+                project_root
+            )
+        })?
+        .to_string_lossy()
+        .to_string();
+
+    let request = broker::BrokerLaunchRequest {
+        profile: selector.profile.clone(),
+        sandbox: selector.sandbox.clone(),
+        argv: sandbox_args.to_vec(),
+        cwd_rel,
+    };
+
+    let payload = serde_json::to_vec(&request)
+        .map_err(|e| format!("serialize broker launch request: {e}"))?;
+    let mut stream = UnixStream::connect(BROKER_SOCKET_CHILD_PATH)
+        .map_err(|e| format!("connect broker socket '{BROKER_SOCKET_CHILD_PATH}': {e}"))?;
+    stream
+        .write_all(&payload)
+        .map_err(|e| format!("write broker launch request: {e}"))?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|e| format!("shutdown broker socket write end: {e}"))?;
+
+    let mut response_payload = Vec::new();
+    stream
+        .read_to_end(&mut response_payload)
+        .map_err(|e| format!("read broker launch response: {e}"))?;
+    let response: broker::BrokerLaunchResponse = serde_json::from_slice(&response_payload)
+        .map_err(|e| format!("parse broker launch response: {e}"))?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    Ok(response.exit_code)
 }
 
 fn child_broker_record_path_with_override(
@@ -1441,6 +1754,7 @@ fn run() -> i32 {
         process::exit(1);
     }
 
+    let broker_trusted_record_path = cli.broker_trusted_record_path.as_deref().map(Path::new);
     let host_xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
     if let Err(e) = validate_xdg_runtime_dir(&config, &host_xdg_runtime_dir) {
         eprintln!("{prefix}: {e}");
@@ -1451,6 +1765,25 @@ fn run() -> i32 {
     } else {
         format!("/run/user/{}", cloister_sandbox_lib::socket::current_uid())
     };
+
+    if let Some(selector) = cli.broker_launch.as_ref() {
+        if broker_trusted_record_path.is_none()
+            && Path::new(BROKER_SOCKET_CHILD_PATH).exists()
+            && child_broker_record_path_with_override(None).is_ok()
+        {
+            if let Err(e) = prepare_run_cmd(&config, &cli.sandbox_args, cli.broker_launch.as_ref())
+            {
+                eprintln!("{prefix}: {e}");
+                process::exit(2);
+            }
+            let broker_status = run_broker_client(&config, selector, &cli.sandbox_args)
+                .unwrap_or_else(|e| {
+                    eprintln!("{prefix}: {e}");
+                    process::exit(1);
+                });
+            return broker_status;
+        }
+    }
     // --- 2b. Install signal handlers so SIGTERM/SIGINT/SIGHUP forward to children ---
     install_signal_handlers();
 
@@ -1468,6 +1801,13 @@ fn run() -> i32 {
             cmd.arg(&self_exe);
             cmd.arg("--after-netns");
             cmd.args(["--config", &config_path]);
+            if let Some(selector) = cli.broker_launch.as_ref() {
+                cmd.args(["--broker-launch-profile", &selector.profile]);
+                cmd.args(["--broker-launch-sandbox", &selector.sandbox]);
+            }
+            if let Some(trusted_record_path) = cli.broker_trusted_record_path.as_deref() {
+                cmd.args(["--broker-trusted-record", trusted_record_path]);
+            }
             cmd.args(&cli.sandbox_args);
 
             let status = spawn_and_wait(&mut cmd, false, None).unwrap_or_else(|e| {
@@ -1713,14 +2053,17 @@ fn run() -> i32 {
             &sandbox_dir,
             &sandbox_dest,
             &host_xdg_runtime_dir,
-            None,
+            broker_trusted_record_path,
             Some(&sandbox_dir),
         ) {
             Ok(Some(args)) => {
-                let profile =
-                    load_trusted_child_profile(&sandbox_dir, cli.broker_launch.as_ref(), None)
-                        .ok()
-                        .flatten();
+                let profile = load_trusted_child_profile(
+                    &sandbox_dir,
+                    cli.broker_launch.as_ref(),
+                    broker_trusted_record_path,
+                )
+                .ok()
+                .flatten();
                 config_dynamic_binds = filter_child_overlay_project_bind(
                     &config.dynamic_binds,
                     &runtime_vars,
@@ -1769,6 +2112,30 @@ fn run() -> i32 {
     let broker_session_record_path = broker_registration
         .as_ref()
         .and_then(|registration| registration.broker_session_record_path.clone());
+    let broker_listener = match broker_session_record_path.as_deref() {
+        Some(record_path) => {
+            match start_broker_listener(&config, &host_xdg_runtime_dir, &sandbox_dir, record_path) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    eprintln!("{prefix}: {e}");
+                    cleanup(CleanupState {
+                        ssh_handle: None,
+                        dbus_proxy: None,
+                        pulse_bridge: None,
+                        wayland_socket: None,
+                        machine_id_path: None,
+                        proc_privacy_state: None,
+                        anonymize_file_paths: Vec::new(),
+                        flatpak_portal_state: None,
+                        broker_session_record_path,
+                        broker_listener: None,
+                    });
+                    process::exit(1);
+                }
+            }
+        }
+        None => None,
+    };
 
     // Passthrough env
     extra_args.extend(bwrap::passthrough_env_args(&config.passthrough_env));
@@ -1933,6 +2300,7 @@ fn run() -> i32 {
                         anonymize_file_paths: Vec::new(),
                         flatpak_portal_state,
                         broker_session_record_path,
+                        broker_listener,
                     }));
                 }
                 let socket = format!("{wayland_dir}/{}", process::id());
@@ -1954,6 +2322,7 @@ fn run() -> i32 {
                         anonymize_file_paths: Vec::new(),
                         flatpak_portal_state,
                         broker_session_record_path,
+                        broker_listener,
                     }));
                 }
                 let app_id = format!("cloister-{}", config.name);
@@ -1982,6 +2351,7 @@ fn run() -> i32 {
                             anonymize_file_paths: Vec::new(),
                             flatpak_portal_state,
                             broker_session_record_path,
+                            broker_listener,
                         }));
                     }
                 }
@@ -2052,6 +2422,7 @@ fn run() -> i32 {
                     anonymize_file_paths: Vec::new(),
                     flatpak_portal_state,
                     broker_session_record_path,
+                    broker_listener,
                 }));
             }
         };
@@ -2102,6 +2473,7 @@ fn run() -> i32 {
                         anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
+                        broker_listener,
                     }));
                 }
             }
@@ -2149,6 +2521,7 @@ fn run() -> i32 {
                             anonymize_file_paths,
                             flatpak_portal_state,
                             broker_session_record_path,
+                            broker_listener,
                         });
                         process::exit(1);
                     }
@@ -2168,6 +2541,7 @@ fn run() -> i32 {
                         anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
+                        broker_listener,
                     });
                     process::exit(1);
                 }
@@ -2214,6 +2588,7 @@ fn run() -> i32 {
                         anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
+                        broker_listener,
                     },
                     2,
                 ));
@@ -2250,6 +2625,7 @@ fn run() -> i32 {
                 anonymize_file_paths,
                 flatpak_portal_state,
                 broker_session_record_path,
+                broker_listener,
             });
             process::exit(1);
         }
@@ -2269,6 +2645,7 @@ fn run() -> i32 {
                 anonymize_file_paths,
                 flatpak_portal_state,
                 broker_session_record_path,
+                broker_listener,
             });
             return 127;
         }
@@ -2285,6 +2662,7 @@ fn run() -> i32 {
         anonymize_file_paths,
         flatpak_portal_state,
         broker_session_record_path,
+        broker_listener,
     });
 
     // --- 13. Exit with bwrap's exit code ---
@@ -2332,6 +2710,7 @@ fn cleanup(state: CleanupState) {
         anonymize_file_paths,
         flatpak_portal_state,
         broker_session_record_path,
+        broker_listener,
     } = state;
     // SSH filter cleanup (SshFilterHandle::drop handles this)
     drop(ssh_handle);
@@ -2376,6 +2755,10 @@ fn cleanup(state: CleanupState) {
     if let Some(state) = flatpak_portal_state {
         let _ = runtime::remove_path_if_exists(&state.flatpak_info_path);
         let _ = runtime::remove_path_if_exists(&state.instance_dir);
+    }
+
+    if let Some(listener) = broker_listener {
+        listener.stop();
     }
 
     if let Some(path) = broker_session_record_path {
@@ -2483,6 +2866,7 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
         config_path: None,
         after_netns: false,
         broker_launch: None,
+        broker_trusted_record_path: None,
         sandbox_args: Vec::new(),
     };
     let mut i = 1;
@@ -2523,6 +2907,15 @@ fn parse_cli_args(args: &[String]) -> Result<CliArgs, String> {
                     );
                 }
                 set_broker_launch_sandbox(&mut parsed, args[i].clone())?;
+            }
+            "--broker-trusted-record" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(
+                        "cloister-sandbox: --broker-trusted-record requires a path".to_string()
+                    );
+                }
+                set_broker_trusted_record_path(&mut parsed, args[i].clone())?;
             }
             "--" => {
                 past_separator = true;
@@ -2603,6 +2996,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
             "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -2673,6 +3067,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
             "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",
@@ -2699,6 +3094,16 @@ mod tests {
                         "workspace": {
                             "mode": "project-rw"
                         }
+                    }
+                },
+                "generated_launchers": {
+                    "clb-overlay": {
+                        "profile": "overlay",
+                        "sandbox": "worker"
+                    },
+                    "clb-project": {
+                        "profile": "project",
+                        "sandbox": "worker"
                     }
                 },
                 "available_delegated_per_dir_mounts": {
@@ -2925,6 +3330,17 @@ mod tests {
         );
         assert!(record.get("spawnable_profiles").is_some());
         assert!(record.get("available_delegated_per_dir_mounts").is_some());
+        assert!(env_args.windows(3).any(|window| {
+            window[0] == "--bind"
+                && window[1]
+                    == broker_store::socket_path(
+                        host_runtime_dir.to_str().unwrap(),
+                        &capability.token,
+                    )
+                    .unwrap()
+                    .to_string_lossy()
+                && window[2] == BROKER_SOCKET_CHILD_PATH
+        }));
 
         let _ = std::fs::remove_dir_all(&host_runtime_dir);
     }
@@ -3215,6 +3631,7 @@ mod tests {
             anonymize_file_paths: Vec::new(),
             flatpak_portal_state: None,
             broker_session_record_path: registration.broker_session_record_path,
+            broker_listener: None,
         });
 
         assert!(
@@ -3267,6 +3684,7 @@ mod tests {
             anonymize_file_paths: Vec::new(),
             flatpak_portal_state: None,
             broker_session_record_path: registration.broker_session_record_path,
+            broker_listener: None,
         });
 
         assert_eq!(exit_code, 1);
@@ -3321,6 +3739,7 @@ mod tests {
                 anonymize_file_paths: Vec::new(),
                 flatpak_portal_state: None,
                 broker_session_record_path: registration.broker_session_record_path,
+                broker_listener: None,
             },
             2,
         );
@@ -4729,6 +5148,47 @@ mod tests {
     }
 
     #[test]
+    fn broker_launcher_parse_accepts_trusted_record_override() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-launch-profile",
+            "ephemeral",
+            "--broker-launch-sandbox",
+            "worker",
+            "--broker-trusted-record",
+            "/tmp/session.json",
+            "--",
+            "git",
+            "status",
+        ]);
+        let parsed = parse_cli_args(&args).unwrap();
+
+        assert_eq!(
+            parsed.broker_trusted_record_path.as_deref(),
+            Some("/tmp/session.json")
+        );
+        assert_eq!(parsed.sandbox_args, vec!["git", "status"]);
+    }
+
+    #[test]
+    fn broker_launcher_parse_rejects_missing_trusted_record_value() {
+        let args = s(&[
+            "cloister-sandbox",
+            "--config",
+            "/nix/store/xxx.json",
+            "--broker-trusted-record",
+        ]);
+        let err = parse_cli_args(&args).unwrap_err();
+
+        assert_eq!(
+            err,
+            "cloister-sandbox: --broker-trusted-record requires a path"
+        );
+    }
+
+    #[test]
     fn broker_launcher_parse_rejects_incomplete_selector() {
         let args = s(&[
             "cloister-sandbox",
@@ -4789,6 +5249,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
             "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",

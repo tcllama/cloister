@@ -32,6 +32,20 @@ pub struct BrokerDelegatedPerDirMount {
     pub sub_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrokerLaunchRequest {
+    pub profile: String,
+    pub sandbox: String,
+    pub argv: Vec<String>,
+    pub cwd_rel: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrokerLaunchResponse {
+    pub exit_code: i32,
+    pub error: Option<String>,
+}
+
 pub fn resolve_delegated_per_dir_source(
     base_path: &str,
     dir_hash: &str,
@@ -116,6 +130,14 @@ impl From<&BrokerSession> for BrokerParentCapability {
             token: session.token.clone(),
         }
     }
+}
+
+pub fn resolve_relative_launch_dir(project_root: &str, cwd_rel: &str) -> Result<PathBuf, String> {
+    let project_root = normalize_absolute_path(project_root)?;
+    if cwd_rel.is_empty() {
+        return Ok(project_root);
+    }
+    Ok(project_root.join(normalize_relative_sub_path(cwd_rel)?))
 }
 
 fn normalize_relative_sub_path(sub_path: &str) -> Result<PathBuf, String> {
@@ -209,6 +231,28 @@ mod tests {
             resolve_delegated_per_dir_source("/var/lib/cloister/delegated", "abc123def456", None)
                 .unwrap();
         assert_eq!(without_sub_path, "/var/lib/cloister/delegated/abc123def456");
+    }
+
+    #[test]
+    fn resolve_relative_launch_dir_accepts_empty_relative_path() {
+        assert_eq!(
+            resolve_relative_launch_dir("/workspace/project", "").unwrap(),
+            PathBuf::from("/workspace/project")
+        );
+    }
+
+    #[test]
+    fn resolve_relative_launch_dir_joins_safe_relative_path() {
+        assert_eq!(
+            resolve_relative_launch_dir("/workspace/project", "nested/src").unwrap(),
+            PathBuf::from("/workspace/project/nested/src")
+        );
+    }
+
+    #[test]
+    fn resolve_relative_launch_dir_rejects_traversal() {
+        let err = resolve_relative_launch_dir("/workspace/project", "../escape").unwrap_err();
+        assert!(err.contains("delegated per-dir sub_path must be a relative traversal-free path"));
     }
 
     #[test]

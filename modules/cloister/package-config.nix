@@ -359,6 +359,15 @@ let
         exit 2
       fi
 
+      if [ -n "''${CLOISTER_BROKER_TRUSTED_RECORD:-}" ]; then
+        exec ${cloister-sandbox}/bin/cloister-sandbox \
+          --config ${launcherConfigArg} \
+          --broker-launch-profile ${lib.escapeShellArg launcher.profile} \
+          --broker-launch-sandbox ${lib.escapeShellArg launcher.sandbox} \
+          --broker-trusted-record "$CLOISTER_BROKER_TRUSTED_RECORD" \
+          -- "$@"
+      fi
+
       exec ${cloister-sandbox}/bin/cloister-sandbox \
         --config ${launcherConfigArg} \
         --broker-launch-profile ${lib.escapeShellArg launcher.profile} \
@@ -418,6 +427,7 @@ let
       bwrap_path = "${bubblewrapPackage}/bin/bwrap";
       shell_bin = shellLib.bin;
       shell_interactive_args = shellLib.interactiveArgs;
+      wrapped_command_shell_args = shellLib.wrappedCommandShellArgs or shellLib.interactiveArgs;
       shell_name = sCfg.shell.name;
       shell_host_config = sCfg.shell.hostConfig;
       default_command = sCfg.defaultCommand;
@@ -515,6 +525,11 @@ let
         makeWrapper ${cloister-sandbox}/bin/cloister-sandbox $out/bin/cl-${name} \
           --set-default CLOISTER_BUILD_REV ${lib.escapeShellArg buildRevision} \
           --set-default CLOISTER_CONFIG_PATH ${lib.escapeShellArg configJsonPath} \
+          --set-default CLOISTER_WORKER_BROKER_LAUNCHER_PACKAGE ${
+            lib.escapeShellArg (
+              if workerBrokerLauncherPackage != null then toString workerBrokerLauncherPackage else ""
+            )
+          } \
           --add-flags "--config ${configJsonPath} --"
       '';
 in

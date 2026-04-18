@@ -11,12 +11,17 @@
       fd
       git
       nil
+      opencode
       ripgrep
     ];
 
-    registry.commands = [
-      "git"
-      "nvim"
-    ];
+    registry = {
+      commands = [
+        "git"
+        "nvim"
+      ];
+
+      interactiveCommands = [ "opencode" ];
+    };
   };
 }

@@ -372,6 +372,7 @@ mod tests {
             "bwrap_path": "/nix/store/xxx-bubblewrap/bin/bwrap",
             "shell_bin": "/nix/store/xxx-zsh/bin/zsh",
             "shell_interactive_args": ["-i"],
+            "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
             "sandbox_home": "/home/user",

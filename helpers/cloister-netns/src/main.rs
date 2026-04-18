@@ -174,8 +174,17 @@ fn validate_required_group(required_group: Option<&str>) -> Result<(), String> {
     validate_required_group_with(required_group, resolve_group_gid, &group_ids)
 }
 
+fn should_set_no_new_privs(cmd: &str, args: &[String]) -> bool {
+    let is_cloister_sandbox = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some("cloister-sandbox");
+
+    !(is_cloister_sandbox && args.iter().any(|arg| arg == "--after-netns"))
+}
+
 /// Drop all Linux capability sets after namespace switch.
-fn drop_privileges() -> Result<(), String> {
+fn drop_privileges(set_no_new_privs: bool) -> Result<(), String> {
     // linux/capability.h
     const LINUX_CAPABILITY_VERSION_3: u32 = 0x20080522;
 
@@ -234,7 +243,7 @@ fn drop_privileges() -> Result<(), String> {
             return Err("failed to clear ambient capabilities".to_string());
         }
 
-        if nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+        if set_no_new_privs && nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err("failed to set no_new_privs".to_string());
         }
 
@@ -275,10 +284,12 @@ fn drop_privileges() -> Result<(), String> {
             }
         }
 
-        // Verify no_new_privs took effect
-        let nnp = nix::libc::prctl(nix::libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
-        if nnp != 1 {
-            return Err(format!("PR_GET_NO_NEW_PRIVS returned {nnp}, expected 1"));
+        if set_no_new_privs {
+            // Verify no_new_privs took effect
+            let nnp = nix::libc::prctl(nix::libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+            if nnp != 1 {
+                return Err(format!("PR_GET_NO_NEW_PRIVS returned {nnp}, expected 1"));
+            }
         }
     }
 
@@ -352,8 +363,12 @@ fn main() {
         process::exit(1);
     });
 
-    // Drop all privilege state before execing the sandbox.
-    drop_privileges().unwrap_or_else(|e| {
+    // Drop all privilege state before execing the sandbox. Keep no_new_privs
+    // disabled only for cloister-sandbox's trusted --after-netns re-exec so the
+    // host-side broker can still launch additional netns sandboxes.
+    let set_no_new_privs =
+        should_set_no_new_privs(&args[parsed.cmd_start], &args[parsed.cmd_start + 1..]);
+    drop_privileges(set_no_new_privs).unwrap_or_else(|e| {
         eprintln!("cloister-netns: {e}");
         process::exit(1);
     });
@@ -448,6 +463,22 @@ mod tests {
     #[test]
     fn validate_rejects_null() {
         assert!(validate_netns_name("foo\0bar").is_err());
+    }
+
+    #[test]
+    fn should_set_no_new_privs_for_generic_command() {
+        assert!(should_set_no_new_privs(
+            "/nix/store/allowed/bin/ip",
+            &s(&["route"])
+        ));
+    }
+
+    #[test]
+    fn should_skip_no_new_privs_for_cloister_sandbox_after_netns_reexec() {
+        assert!(!should_set_no_new_privs(
+            "/nix/store/allowed/bin/cloister-sandbox",
+            &s(&["--after-netns", "--config", "/nix/store/cfg.json"])
+        ));
     }
 
     #[test]

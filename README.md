@@ -172,7 +172,10 @@ Each sandbox defined under `cloister.sandboxes.<name>` produces a `cl-<name>` bi
 cl-dev              # interactive shell (detects git root automatically)
 cl-dev cargo build  # run a single command and exit
 cl-dev -c cargo build  # -c is accepted but optional
+cl-dev -i cargo build  # run via the interactive shell startup path
 ```
+
+Use `-i` for commands that depend on shell startup behavior inside the sandbox, such as `direnv`, shell functions, or environment setup from `init.text`. Cloister runs the command through the interactive shell startup path and, when `direnv` is available in the sandbox, delegates to `direnv exec "$PWD" ...` before launching the target so one-shot commands inherit the repo env too. When using registry-wrapped commands, put those in `registry.interactiveCommands` so Cloister generates `cl-<name> -i ...` wrappers automatically.
 
 You can use host shell config or provide sandbox-specific rc files (sourced before `init.text` and registry snippets). When `hostConfig = true`, the shell loads host startup files through its normal startup path; Cloister then sources any custom rc files, `init.text`, and registry snippets. Custom rc files are mounted under `~/.config/cl-shell/<name>/custom/`.
 

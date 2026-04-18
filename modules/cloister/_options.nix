@@ -52,7 +52,6 @@ let
       # --- Registry rendering (computed from submodule's own config) ---
       regCfg = config.registry;
       shellLib = shells.${config.shell.name};
-      allCommands = regCfg.commands ++ regCfg.extraCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
       generatedLauncherNames = map (profileName: "clb-${profileName}") (
@@ -230,7 +229,11 @@ let
 
       wrappableAliases = lib.filterAttrs (n: _: !builtins.elem n regCfg.noWrap) regCfg.aliases;
 
-      wrappableCommands = lib.filter (cmd: !builtins.elem cmd regCfg.noWrap) allCommands;
+      wrappableCommands = lib.filter (cmd: !builtins.elem cmd regCfg.noWrap) regCfg.commands;
+      wrappableInteractiveCommands = lib.filter (
+        cmd: !builtins.elem cmd regCfg.noWrap
+      ) regCfg.interactiveCommands;
+      wrappableExtraCommands = lib.filter (cmd: !builtins.elem cmd regCfg.noWrap) regCfg.extraCommands;
 
       wrappableFunctions = lib.filter (n: !builtins.elem n regCfg.noWrap) functionNames;
 
@@ -264,7 +267,20 @@ let
               else
                 "__cloister_run_${name} -c ${cmd}"
             )
-          ) wrappableCommands;
+          ) (wrappableCommands ++ wrappableExtraCommands);
+
+          renderOutsideInteractiveCommands = lib.concatMapStringsSep "\n" (
+            cmd:
+            let
+              wrappedCommand =
+                if defaultCommandName == cmd then defaultCommandArgs else lib.escapeShellArgs [ cmd ];
+            in
+            hostShellLib.renderOutsideCommand {
+              name = cmd;
+              sandbox = name;
+              inherit wrappedCommand;
+            }
+          ) wrappableInteractiveCommands;
 
           renderOutsideFunctions = lib.concatMapStringsSep "\n\n" (
             n:
@@ -281,6 +297,7 @@ let
             renderOutsideRunner
             renderOutsideAliases
             renderOutsideCommands
+            renderOutsideInteractiveCommands
             renderOutsideFunctions
           ]
         );
@@ -1380,6 +1397,16 @@ let
             default = [ ];
             description = ''
               Additional command names appended to wrapped commands.
+              Command names must match ${patterns.safeCommand}.
+            '';
+          };
+
+          interactiveCommands = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = ''
+              Command names to wrap outside the sandbox via `cl-<name> -i ...`,
+              so they run through the sandbox shell startup path before exec.
               Command names must match ${patterns.safeCommand}.
             '';
           };

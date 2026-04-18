@@ -255,7 +255,11 @@ cloister.sandboxes.dev.registry = {
 
   # Commands to wrap outside the sandbox (typing these
   # in your normal shell routes them through cl-dev)
-  commands = [ "nvim" "cargo" "claude" "lazygit" ];
+  commands = [ "nvim" "cargo" "claude" ];
+
+  # Commands that should run through the shell startup path first
+  # (useful for direnv, init.text, shell functions, etc.)
+  interactiveCommands = [ "lazygit" "opencode" ];
 
   # Names that should NOT be wrapped outside
   noWrap = [ "git" ];
@@ -263,6 +267,8 @@ cloister.sandboxes.dev.registry = {
 ```
 
 When `registry.commands` is set, typing the command in your normal shell transparently runs it through the sandbox. For example, `nvim` becomes `cl-dev nvim`. This means you never need to think about entering the sandbox - your tools just work, but sandboxed.
+
+If a wrapped command depends on shell setup inside the sandbox (for example `direnv` hooks, shell functions, or environment initialization added by `init.text`), put it in `registry.interactiveCommands`. Cloister will then emit wrappers that invoke `cl-<name> -i ...`, which runs the target command through the interactive shell startup path before execution. When `direnv` is installed inside the sandbox, that `-i` path also delegates to `direnv exec "$PWD" ...` before launching the target so one-shot commands inherit the repo environment without requiring a custom wrapper.
 
 Outside-wrapped aliases are intentionally limited to argv-safe strings. If an alias needs shell syntax such as pipes, redirects, variable expansion, quoting, or builtins, put it in `registry.functions` instead.
 
@@ -746,7 +752,7 @@ cloister.sandboxes.evince = {
 };
 ```
 
-Now `cl-evince` launches evince directly instead of opening a shell. Additional arguments are appended to the default command, so `cl-evince document.pdf` runs `evince document.pdf`. To run a different command explicitly, use `-c`: `cl-evince -c some-other-command`. Bare `-c` is invalid and exits with a usage error. To pass values like `--version`, `--build-info`, or `-c` through to the sandboxed default command instead of the launcher, insert `--` first: `cl-evince -- --version`. Generated wrapped command aliases also pass their leading arguments through to the app now, so sandbox control flags like `--shell` should be used on `cl-<name>` itself. This is especially useful with `gui.desktopEntry`, because the desktop entry launches `cl-<name>` and relies on `defaultCommand` to start the application.
+Now `cl-evince` launches evince directly instead of opening a shell. Additional arguments are appended to the default command, so `cl-evince document.pdf` runs `evince document.pdf`. To run a different command explicitly, use `-c`: `cl-evince -c some-other-command`. To run a command through the interactive shell startup path first, use `-i`: `cl-evince -i some-other-command`. When `direnv` is present in the sandbox, that path also uses `direnv exec "$PWD" ...` before the final `exec`, which makes one-shot launches pick up the active repo environment. Bare `-c` and bare `-i` are invalid and exit with a usage error. To pass values like `--version`, `--build-info`, `-c`, or `-i` through to the sandboxed default command instead of the launcher, insert `--` first: `cl-evince -- --version`. Generated wrapped command aliases also pass their leading arguments through to the app now, so sandbox control flags like `--shell` should be used on `cl-<name>` itself. This is especially useful with `gui.desktopEntry`, because the desktop entry launches `cl-<name>` and relies on `defaultCommand` to start the application.
 
 ## Identity anonymization
 
@@ -882,6 +888,7 @@ See the sections above for usage examples and explanations.
 | `registry.aliases` | attrsOf str | `{}` | Shell aliases |
 | `registry.functions` | attrsOf lines | `{}` | Shell functions |
 | `registry.commands` | list of str | `[]` | Commands to wrap outside sandbox |
-| `registry.extraCommands` | list of str | `[]` | Additional commands appended to wrapped commands |
+| `registry.extraCommands` | list of str | `[]` | Additional command names appended to wrapped commands |
+| `registry.interactiveCommands` | list of str | `[]` | Commands to wrap outside sandbox via `cl-<name> -i ...` |
 | `registry.noWrap` | list of str | `[]` | Names to exclude from wrapping |
 | `init.text` | lines | `""` | Shell snippet sourced inside the sandbox |

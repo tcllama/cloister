@@ -38,6 +38,18 @@ let
         cd ${lib.escapeShellArg nestedProjectDir}
         clb-project "$0" child-project-rw-write
         ;;
+      child-netns-route)
+        exec ${pkgs.iproute2}/bin/ip route
+        ;;
+      child-netns-host-internal)
+        exec ${pkgs.curl}/bin/curl -fsS http://host.internal:4001/passwd
+        ;;
+      parent-netns-route)
+        clb-project "$0" child-netns-route
+        ;;
+      parent-netns-host-internal)
+        clb-project "$0" child-netns-host-internal
+        ;;
       parent-missing-command)
         clb-project
         ;;
@@ -67,6 +79,8 @@ let
         shell.name = "bash";
         shell.hostConfig = false;
         validators.enable = false;
+        network.enable = true;
+        network.namespace = "dev";
         # Nested worker launches resolve their wrapper init bind source from the
         # outer sandbox filesystem, so the runtime fixture must expose the bash
         # config directory there as well.
@@ -107,6 +121,8 @@ let
         shell.name = "bash";
         shell.hostConfig = false;
         validators.enable = false;
+        network.enable = true;
+        network.namespace = "dev";
       };
     };
   };
@@ -117,6 +133,8 @@ pkgs.testers.runNixOSTest (_: {
   nodes.machine =
     { pkgs, ... }:
     {
+      imports = [ ../../modules/cloister-netns ];
+
       virtualisation.cores = 2;
 
       environment.systemPackages = [
@@ -128,7 +146,22 @@ pkgs.testers.runNixOSTest (_: {
       users.users.${hmUser} = {
         isNormalUser = true;
         createHome = true;
-        extraGroups = [ ];
+        extraGroups = [ "cloister-netns" ];
+      };
+
+      cloister-netns = {
+        enable = true;
+        networks.dev.localhost.allowedPorts = [ 4001 ];
+      };
+
+      systemd.services.localhost-http = {
+        description = "HTTP server for worker broker netns runtime test";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${pkgs.python3}/bin/python -m http.server 4001 --bind 127.0.0.1 --directory /etc";
+          Restart = "always";
+        };
       };
 
       systemd.services.cloister-runtime-worker-broker-fixture = {
@@ -172,6 +205,8 @@ pkgs.testers.runNixOSTest (_: {
 
     start_all()
 
+    machine.wait_for_unit("cloister-netns-dev.service")
+    machine.wait_for_unit("localhost-http.service")
     machine.wait_for_unit("cloister-runtime-worker-broker-fixture.service")
 
     tester_shell = (
@@ -221,6 +256,21 @@ pkgs.testers.runNixOSTest (_: {
         "overlay worker does not mutate host file",
     )
     machine.fail("test -e ${projectDir}/overlay-only.txt")
+
+    assert_contains(
+        machine,
+        tester_shell
+        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-netns-route'",
+        "default via 172.30.0.1 dev veth-dev-ns",
+        "worker broker launches worker through host netns helper",
+    )
+    assert_contains(
+        machine,
+        tester_shell
+        + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-netns-host-internal'",
+        "root:x:",
+        "worker broker child can reach host.internal service from netns",
+    )
 
     assert_failure_contains(
         machine,
