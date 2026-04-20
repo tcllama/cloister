@@ -425,7 +425,28 @@ let
         }
       ];
 
-      guiBinds = [ ];
+      gtkSettingsIni =
+        if sCfg.gui.gtk.enable then
+          pkgs.writeText "cloister-gtk-settings-${name}.ini" ''
+            [Settings]
+            gtk-theme-name=${sCfg.gui.gtk.theme}
+            gtk-icon-theme-name=${sCfg.gui.gtk.iconTheme}
+          ''
+        else
+          null;
+
+      guiBinds = lib.optionals sCfg.gui.gtk.enable [
+        {
+          src = gtkSettingsIni;
+          dest = "$HOME/.config/gtk-3.0/settings.ini";
+          try = false;
+        }
+        {
+          src = gtkSettingsIni;
+          dest = "$HOME/.config/gtk-4.0/settings.ini";
+          try = false;
+        }
+      ];
 
       shellConfigBinds = lib.optionals sCfg.shell.hostConfig (
         map (b: {
@@ -841,6 +862,7 @@ let
       dynamicRoBinds = builtins.filter (b: !isStaticBind b) (
         remapBinds (
           resolvedExtraRo
+          ++ guiBinds
           ++ dbusBinds
           ++ gitBinds
           ++ portalRoBinds
@@ -866,7 +888,7 @@ let
       # user-provided paths. This prevents e.g. git.enable's explicit config
       # file binds from being treated as user-provided paths while
       # still catching user-supplied extraBinds that touch the same tree.
-      featureBindSrcs = map (b: b.src) (gitBinds ++ dbusBinds);
+      featureBindSrcs = map (b: b.src) (gitBinds ++ dbusBinds ++ guiBinds);
       bindSources = lib.unique (
         builtins.filter (s: !builtins.elem s featureBindSrcs) (
           map (b: b.src) (staticRoBinds ++ staticRwBinds ++ dynamicBindsList)

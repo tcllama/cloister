@@ -966,13 +966,19 @@ let
             enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
-              description = "Enable GTK theme integration. Sets GTK_THEME and adds gtk3/gtk4 theme assets to XDG_DATA_DIRS.";
+              description = "Enable GTK theme integration. Sets GTK_THEME, writes GTK settings.ini theme values, and adds gtk3/gtk4 theme assets to XDG_DATA_DIRS.";
             };
 
             theme = lib.mkOption {
               type = lib.types.str;
-              default = "Adwaita";
-              description = "GTK theme name. Sets the GTK_THEME environment variable inside the sandbox.";
+              default = "Graphite-Light";
+              description = "GTK theme name. Sets GTK_THEME and gtk-theme-name inside the sandbox.";
+            };
+
+            iconTheme = lib.mkOption {
+              type = lib.types.str;
+              default = "Papirus-Light";
+              description = "GTK icon theme name. Sets gtk-icon-theme-name inside the sandbox.";
             };
 
             packages = lib.mkOption {
@@ -1743,11 +1749,15 @@ let
 
             # Default data packages for GUI sandboxes: icon theme fallback + conditionally GTK theme assets
             dataPackages = lib.mkDefault (
-              [ pkgs.hicolor-icon-theme ]
+              [
+                pkgs.hicolor-icon-theme
+                pkgs.papirus-icon-theme
+              ]
               ++ lib.optionals config.gui.gtk.enable [
                 pkgs.gtk3
                 pkgs.gtk4
                 pkgs.gsettings-desktop-schemas
+                pkgs.graphite-gtk-theme
               ]
             );
 

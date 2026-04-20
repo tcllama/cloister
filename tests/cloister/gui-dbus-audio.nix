@@ -16,7 +16,8 @@ let
           scaleFactor = 1.5;
           gtk = {
             enable = true;
-            theme = "Adwaita-dark";
+            theme = "Graphite-Light";
+            iconTheme = "Papirus-Light";
           };
           qt = {
             enable = true;
@@ -405,6 +406,7 @@ let
   betaConfig = multiPipewireEval.config.cloister._internal.sandboxConfigs.beta;
   browserStaticArgs = builtins.toJSON sandboxConfig.static_bwrap_args;
   browserDynamicBinds = builtins.toJSON sandboxConfig.dynamic_binds;
+  x11StaticArgs = builtins.toJSON x11Config.static_bwrap_args;
   pipewireConf = eval.config.xdg.configFile."pipewire/pipewire.conf.d/99-cloister.conf".text;
   wireplumberConf =
     eval.config.xdg.configFile."wireplumber/wireplumber.conf.d/99-cloister-browser.conf".text;
@@ -455,7 +457,16 @@ let
     (checks.expectContains "dbus proxy wrapper path renders" "cloister-dbus-proxy-browser"
       dbusProxyPath
     )
-    (checks.expectContains "gtk theme renders" ''"GTK_THEME","Adwaita-dark"'' browserStaticArgs)
+    (checks.expectContains "gtk theme renders" ''"GTK_THEME","Graphite-Light"'' browserStaticArgs)
+    (checks.expectContains "gtk default theme renders" ''"GTK_THEME","Graphite-Light"'' x11StaticArgs)
+    (checks.expectContains "gtk settings gtk3 bind renders"
+      ''"dest":"$HOME/.config/gtk-3.0/settings.ini"''
+      browserDynamicBinds
+    )
+    (checks.expectContains "gtk settings gtk4 bind renders"
+      ''"dest":"$HOME/.config/gtk-4.0/settings.ini"''
+      browserDynamicBinds
+    )
     (checks.expectContains "qt style renders" ''"QT_STYLE_OVERRIDE","fusion"'' browserStaticArgs)
     (checks.expectContains "fontconfig file renders" ''"FONTCONFIG_FILE"'' browserStaticArgs)
     (checks.expectContains "xdg data dirs render" ''"XDG_DATA_DIRS"'' browserStaticArgs)
