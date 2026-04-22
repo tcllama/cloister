@@ -110,6 +110,12 @@ in
   }
   {
     assertion = builtins.all (
+      bind: bind.dest != "" && !lib.hasPrefix "/" bind.dest && normalizeCopyDest bind.dest == bind.dest
+    ) sCfg.sandbox.extraBinds.managedFileBind;
+    message = "cloister.sandboxes.${name}: all extraBinds.managedFileBind dest paths must be home-relative descendant paths without traversal";
+  }
+  {
+    assertion = builtins.all (
       cf: lib.hasPrefix "$HOME/" (normalizeCopyDest cf.dest)
     ) sCfg.sandbox.copyFiles;
     message = "cloister.sandboxes.${name}: all copyFiles dest paths must start with $HOME/ (after normalization)";
@@ -155,7 +161,7 @@ in
   }
   {
     assertion = duplicateManagedFiles == [ ];
-    message = "cloister.sandboxes.${name}: duplicate managedFile entries: ${lib.concatStringsSep ", " duplicateManagedFiles}";
+    message = "cloister.sandboxes.${name}: duplicate managed file destinations: ${lib.concatStringsSep ", " duplicateManagedFiles}";
   }
   {
     assertion = overriddenEnvKeys == [ ];

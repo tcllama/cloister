@@ -6,6 +6,14 @@
   configHome,
 }:
 rec {
+  resolveExplicitManagedBind = entry: [
+    {
+      src = toString entry.src;
+      dest = "$HOME/${entry.dest}";
+      try = false;
+    }
+  ];
+
   resolveConfigEntry =
     key:
     let

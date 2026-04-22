@@ -687,12 +687,46 @@ let
                 bind.
               '';
             };
+
+            managedFileBind = lib.mkOption {
+              type = lib.types.listOf (
+                lib.types.submodule {
+                  options = {
+                    src = lib.mkOption {
+                      type = lib.types.oneOf [
+                        lib.types.path
+                        lib.types.str
+                      ];
+                      description = ''
+                        Source file to bind read-only into the sandbox. This is typically a
+                        Nix store path such as `./assets/opencode/tui.json`.
+                      '';
+                    };
+
+                    dest = lib.mkOption {
+                      type = lib.types.str;
+                      description = ''
+                        Home-relative destination path for the bind (for example
+                        `.config/opencode/tui.json`).
+                      '';
+                    };
+                  };
+                }
+              );
+              default = [ ];
+              description = ''
+                Explicit read-only file binds whose sources come directly from the Nix
+                store or another fixed path instead of Home Manager. Destinations are
+                home-relative and can overlay files inside `extraBinds.dir` or
+                `extraBinds.perDir` mounts.
+              '';
+            };
           };
 
           dangerousPathWarnings = lib.mkOption {
             type = lib.types.bool;
             default = true;
-            description = "Check extraBinds paths and managedFile-resolved paths against known credential-storing locations and fail if any match.";
+            description = "Check extraBinds paths, managedFile-resolved paths, and managedFileBind destinations against known credential-storing locations and fail if any match.";
           };
 
           allowDangerousPaths = lib.mkOption {

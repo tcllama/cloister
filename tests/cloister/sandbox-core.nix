@@ -67,6 +67,41 @@ let
     };
   };
 
+  perDirManagedFileEval = hm {
+    xdg.configFile."opencode/tui.json".source = managedXdgSource;
+    xdg.configFile."opencode/opencode.json".source = managedHmConfigSource;
+
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.extraBinds = {
+        perDir."/ephemeral" = [ ".config/opencode" ];
+        managedFile = [
+          "opencode/tui.json"
+          "opencode/opencode.json"
+        ];
+      };
+    };
+  };
+
+  explicitManagedFileBindEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.extraBinds = {
+        perDir."/ephemeral" = [ ".config/opencode" ];
+        managedFileBind = [
+          {
+            src = managedXdgSource;
+            dest = ".config/opencode/tui.json";
+          }
+          {
+            src = managedHmConfigSource;
+            dest = ".config/opencode/opencode.json";
+          }
+        ];
+      };
+    };
+  };
+
   managedPrefixEval = hm {
     xdg.configFile."app/exact".source = managedXdgSource;
     xdg.configFile."app/prefix/alpha.toml".source = managedXdgSource;
@@ -350,6 +385,22 @@ let
     };
   };
 
+  duplicateManagedFileBindDest = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.extraBinds.managedFileBind = [
+        {
+          src = managedXdgSource;
+          dest = ".config/app/config.toml";
+        }
+        {
+          src = managedHmConfigSource;
+          dest = ".config/app/config.toml";
+        }
+      ];
+    };
+  };
+
   pathOverride = hm {
     cloister = {
       enable = true;
@@ -396,6 +447,11 @@ let
   staticArgsJson = builtins.toJSON bindMatrixEval.config.cloister._internal.sandboxConfigs.dev.static_bwrap_args;
   persistentState = persistentStateEval.config.cloister._internal.sandboxConfigs.dev;
   persistentStateJson = builtins.toJSON persistentState;
+  perDirManagedFileState = perDirManagedFileEval.config.cloister._internal.sandboxConfigs.dev;
+  perDirManagedFileStateJson = builtins.toJSON perDirManagedFileState;
+  explicitManagedFileBindState =
+    explicitManagedFileBindEval.config.cloister._internal.sandboxConfigs.dev;
+  explicitManagedFileBindStateJson = builtins.toJSON explicitManagedFileBindState;
   managedPrefixConfig = managedPrefixEval.config.cloister._internal.sandboxConfigs.dev;
   managedPrefixStaticArgs = builtins.toJSON managedPrefixConfig.static_bwrap_args;
   managedExactWinsConfig = managedExactWinsEval.config.cloister._internal.sandboxConfigs.dev;
@@ -480,6 +536,30 @@ checks.mkCheck "test-cloister-sandbox-core" [
     "/persist/cloister/dev/.config/app"
     (builtins.toJSON persistentState.managed_file_host_mkdirs)
   )
+  (checks.expectContains "per-dir managed file overlap creates hashed host mkdir path"
+    "/ephemeral/$DIR_HASH/.config/opencode"
+    (builtins.toJSON perDirManagedFileState.managed_file_host_mkdirs)
+  )
+  (checks.expectContains "per-dir managed file bind is rendered for tui.json"
+    ''"/home/tester/.config/opencode/tui.json"''
+    perDirManagedFileStateJson
+  )
+  (checks.expectContains "per-dir managed file bind is rendered for opencode.json"
+    ''"/home/tester/.config/opencode/opencode.json"''
+    perDirManagedFileStateJson
+  )
+  (checks.expectContains "explicit managed file bind overlap creates hashed host mkdir path"
+    "/ephemeral/$DIR_HASH/.config/opencode"
+    (builtins.toJSON explicitManagedFileBindState.managed_file_host_mkdirs)
+  )
+  (checks.expectContains "explicit managed file bind renders tui.json destination"
+    ''"/home/tester/.config/opencode/tui.json"''
+    explicitManagedFileBindStateJson
+  )
+  (checks.expectContains "explicit managed file bind renders store source"
+    (builtins.unsafeDiscardStringContext (toString managedXdgSource))
+    explicitManagedFileBindStateJson
+  )
   (checks.expectContains "dangerous path list includes ssh" ".ssh" (
     builtins.toJSON sandboxConfig.dangerous_paths
   ))
@@ -553,7 +633,11 @@ checks.mkCheck "test-cloister-sandbox-core" [
   )
   (checks.expectAssertionMessage "duplicate managed files are rejected"
     duplicateManagedFile.assertions
-    "duplicate managedFile entries"
+    "duplicate managed file destinations"
+  )
+  (checks.expectAssertionMessage "duplicate explicit managed file destinations are rejected"
+    duplicateManagedFileBindDest.assertions
+    "duplicate managed file destinations"
   )
   (checks.expectAssertionMessage "PATH override is rejected" pathOverride.assertions
     "computed and cannot be overridden"

@@ -29,7 +29,7 @@ let
     pathsOverlap
     isDangerousPath
     ;
-  inherit (resolve) resolveConfigEntry resolveConfigEntryIfPresent;
+  inherit (resolve) resolveConfigEntry resolveConfigEntryIfPresent resolveExplicitManagedBind;
 
   # --- D-Bus proxy wrapper rendering ---
 
@@ -316,6 +316,10 @@ let
         ) perDirBuckets
       );
 
+      # Directory-backed binds can shadow file mounts beneath them unless the
+      # file bind is emitted after the directory bind in bubblewrap.
+      dirBackedBinds = dirBinds ++ perDirBinds;
+
       normalizeCopyDest =
         path:
         let
@@ -347,18 +351,21 @@ let
       # Resolve $HOME in managed file dests to the correct sandbox-side home
       # directory at eval time, so they work with both anonymize on and off.
       managedFileHome = if anonymize then sandboxHome else config.home.homeDirectory;
+      resolvedManagedFileBinds = lib.concatMap resolveConfigEntry sCfg.sandbox.extraBinds.managedFile;
+      explicitManagedFileBinds = lib.concatMap resolveExplicitManagedBind sCfg.sandbox.extraBinds.managedFileBind;
       managedFileBinds = map (
         bind:
         bind
         // {
           dest = builtins.replaceStrings [ "$HOME" ] [ managedFileHome ] bind.dest;
         }
-      ) (lib.concatMap resolveConfigEntry sCfg.sandbox.extraBinds.managedFile);
+      ) (resolvedManagedFileBinds ++ explicitManagedFileBinds);
       managedFileDirs = lib.unique (map (bind: builtins.dirOf bind.dest) managedFileBinds);
 
-      # Partition managedFileBinds: binds whose dest falls inside a dir-backed
-      # bind mount must be applied AFTER the dir bind in bwrap, otherwise the
-      # directory mount shadows the individual file mounts.
+      # Partition managedFileBinds: binds whose dest falls inside a
+      # directory-backed bind mount must be applied AFTER the dir bind in
+      # bwrap, otherwise the directory mount shadows the individual file
+      # mounts.
       resolveManagedHome = builtins.replaceStrings [ "$HOME" ] [ managedFileHome ];
       managedFileOverlapsDir =
         bind:
@@ -368,13 +375,14 @@ let
             dirDest = resolveManagedHome (if dirBind.dest != null then dirBind.dest else dirBind.src);
           in
           bind.dest == dirDest || lib.hasPrefix "${dirDest}/" bind.dest
-        ) dirBinds;
+        ) dirBackedBinds;
 
       managedFileBindsNonOverlapping = builtins.filter (b: !managedFileOverlapsDir b) managedFileBinds;
       managedFileBindsOverlapping = builtins.filter managedFileOverlapsDir managedFileBinds;
 
-      # Partition managedFileDirs: dirs inside a dir-backed bind mount need
-      # host-side mkdir -p instead of bwrap --dir (which gets shadowed by the bind).
+      # Partition managedFileDirs: dirs inside a directory-backed bind mount
+      # need host-side mkdir -p instead of bwrap --dir (which gets shadowed by
+      # the bind).
       managedFileDirOverlap =
         dir:
         let
@@ -384,7 +392,7 @@ let
               dest = resolveManagedHome (if bind.dest != null then bind.dest else bind.src);
             in
             dir == dest || lib.hasPrefix "${dest}/" dir
-          ) dirBinds;
+          ) dirBackedBinds;
         in
         if matchingBinds == [ ] then
           null
@@ -628,8 +636,8 @@ let
       allSymlinkLinks = map (s: s.link) allSymlinks;
       duplicateLinks = findDuplicates allSymlinkLinks;
 
-      # --- Duplicate managedFile entries ---
-      duplicateManagedFiles = findDuplicates sCfg.sandbox.extraBinds.managedFile;
+      # --- Duplicate managed file destinations ---
+      duplicateManagedFiles = findDuplicates (map (bind: bind.dest) managedFileBinds);
 
       # --- Unsafe character assertion for user-provided paths ---
       userPaths =
@@ -652,7 +660,9 @@ let
             ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.dir)
             ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.file)
             ++ perDirPaths
-            ++ sCfg.sandbox.extraBinds.managedFile;
+            ++ sCfg.sandbox.extraBinds.managedFile
+            ++ map (bind: toString bind.src) sCfg.sandbox.extraBinds.managedFileBind
+            ++ map (bind: bind.dest) sCfg.sandbox.extraBinds.managedFileBind;
           copyFileSrcPaths = map (cf: cf.src) sCfg.sandbox.copyFiles;
           workerBrokerKeyPaths =
             lib.attrNames sCfg.workerBroker.availableDelegatedPerDirMounts

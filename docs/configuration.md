@@ -342,6 +342,31 @@ cloister.sandboxes.dev.sandbox.extraBinds.managedFile = [
 ];
 ```
 
+### Explicit store-backed managed files
+
+If you want to bind files directly from the Nix store without managing them in Home Manager, use `extraBinds.managedFileBind`:
+
+```nix
+let
+  opencodeAssetsDir = ./assets/opencode;
+  opencodeFiles = [
+    "tui.json"
+    "opencode.json"
+  ];
+in
+{
+  cloister.sandboxes.opencode.sandbox.extraBinds = {
+    perDir."/ephemeral" = [ ".config/opencode" ];
+    managedFileBind = map (relativePath: {
+      src = opencodeAssetsDir + "/${relativePath}";
+      dest = ".config/opencode/${relativePath}";
+    }) opencodeFiles;
+  };
+}
+```
+
+These binds are read-only and overlay correctly on top of `extraBinds.dir` and `extraBinds.perDir` mounts.
+
 ### Disabling working directory binding
 
 App-specific sandboxes (like Discord or Chromium) don't need access to the host directory they're launched from. Disable the working directory bind for tighter isolation:
@@ -818,6 +843,7 @@ See the sections above for usage examples and explanations.
 | `sandbox.extraBinds.file` | attrsOf (list of str) | `{}` | Volume-backed file binds (auto-created) |
 | `sandbox.extraBinds.perDir` | attrsOf (list of str) | `{}` | Per-directory binds keyed by host base directory |
 | `sandbox.extraBinds.managedFile` | list of str | `[]` | Home-manager managed file keys bound read-only |
+| `sandbox.extraBinds.managedFileBind` | list of {src, dest} | `[]` | Explicit read-only file binds from Nix store or fixed paths |
 | `sandbox.dangerousPathWarnings` | bool | `true` | Fail on binds to known credential locations |
 | `sandbox.allowDangerousPaths` | list of str | `[]` | Acknowledged credential paths to allow |
 | `sandbox.enforceStrictHomePolicy` | bool | `true` | Prevent sandboxing home dirs and dot-dirs |
