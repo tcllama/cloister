@@ -121,6 +121,9 @@ checks.mkCheck "test-cloister-image-store" [
   (checks.expectEq "cleanup timer is persistent" true
     eval.config.systemd.timers.cloister-image-store-clean.timerConfig.Persistent
   )
+  (checks.expectEq "image store compression defaults enabled" true
+    eval.config.cloister.imageStore.compression.enable
+  )
   (checks.expectContains "cleanup service uses cleaner binary" "/bin/cloister-image-store-clean"
     cleanupService.serviceConfig.ExecStart
   )
@@ -168,6 +171,10 @@ checks.mkCheck "test-cloister-image-store" [
   (checks.expectFalse "cleanup timer is omitted when disabled" (
     disabledCleanupEval.config.systemd.timers ? "cloister-image-store-clean"
   ))
+  (checks.expectEq "image store compression can be disabled" false
+    (nixos.imageStore { cloister.imageStore.compression.enable = false; })
+    .config.cloister.imageStore.compression.enable
+  )
   (checks.expectEq "no image infos means no mounts" [ ] emptyInfosEval.config.systemd.mounts)
   (checks.expectFalse "no image infos means no activation script" (
     emptyInfosEval.config.system.activationScripts ? "cloisterImageStore"

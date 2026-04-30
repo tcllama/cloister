@@ -131,6 +131,12 @@ let
 
   closureInfo = pkgs.closureInfo { rootPaths = storeRoots; };
 
+  squashfsCompressionArgs =
+    if imageStoreConfig != null && (imageStoreConfig.compression.enable or true) then
+      "-comp zstd -Xcompression-level 10 -b 1M"
+    else
+      "-no-compression";
+
   storeImage =
     pkgs.runCommand "cloister-image-store-${storeId}.squashfs"
       {
@@ -154,7 +160,7 @@ let
         done
         cp ${storeMeta} "$root/meta.json"
 
-        mksquashfs "$root" "$out" -noappend -all-root >/dev/null
+        mksquashfs "$root" "$out" -noappend -all-root ${squashfsCompressionArgs} >/dev/null
       '';
 
   pipewireBackendSocketName =
@@ -432,6 +438,7 @@ in
   internal = {
     inherit configJsonPath;
     inherit pipewirePulseOnlyConfText;
+    inherit imageStoreMode squashfsCompressionArgs;
     inherit workerBrokerLauncherPackage;
     workerBrokerLauncherTexts = workerBrokerRenderedLauncherTexts;
   };

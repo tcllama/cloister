@@ -278,6 +278,7 @@ These are the host-level NixOS settings exposed by Cloister itself:
 |--------|------|---------|---------|
 | `cloister.imageStore.base` | str | `"/var/lib/cloister/images"` | Publish immutable store images and metadata by store hash |
 | `cloister.imageStore.mountBase` | str | `"/run/cloister/images"` | Mount immutable store images by store hash |
+| `cloister.imageStore.compression.enable` | bool | `true` | Compress generated squashfs images with zstd level 10 and 1 MiB blocks |
 | `cloister.imageStore.enable` | bool | `false` | Enable periodic cleanup of published image-store links |
 | `cloister.imageStore.interval` | str | `"weekly"` | systemd timer schedule for image-store cleanup |
 

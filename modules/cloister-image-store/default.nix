@@ -94,6 +94,15 @@ in
       default = "weekly";
       description = "systemd OnCalendar expression for Cloister image-store cleanup.";
     };
+
+    compression.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Compress generated image-store squashfs files with zstd level 10 and 1 MiB blocks.
+        Disable this to build uncompressed squashfs images.
+      '';
+    };
   };
 
   config = lib.mkMerge [

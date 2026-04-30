@@ -132,6 +132,21 @@ let
     };
   };
 
+  imageStoreUncompressedEval = hm {
+    _module.args.osConfig = {
+      cloister.imageStore = {
+        base = "/var/lib/cloister/images";
+        mountBase = "/run/cloister/images";
+        compression.enable = false;
+      };
+    };
+
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.nixStore.mode = "image-store";
+    };
+  };
+
   missingSharedNet = hm {
     cloister = {
       enable = true;
@@ -246,6 +261,7 @@ let
   seccompDisabled = seccompDisabledEval.config.cloister._internal.sandboxConfigs.dev;
   chromiumSeccomp = chromiumSeccompEval.config.cloister._internal.sandboxConfigs.dev;
   imageStoreConfig = imageStoreEval.config.cloister._internal.sandboxConfigs.dev;
+  imageStoreInternal = imageStoreEval.config.cloister._internal.sandboxInternals.dev;
   defaultBashConfig = defaultBashEval.config.cloister._internal.sandboxConfigs.dev;
   validatorsConfig = validatorsEval.config.cloister._internal.sandboxConfigs.dev;
   validatorsRegistry = validatorsEval.config.cloister.sandboxes.dev.registry.rendered.outside.zsh;
@@ -501,5 +517,12 @@ checks.mkCheck "test-cloister-rendered-config" [
   )
   (checks.expectContains "image-store mount path renders store id" "/run/cloister/images/"
     imageStoreConfig.store_mount_path
+  )
+  (checks.expectEq "image-store defaults to zstd level 10 with 1M blocks"
+    "-comp zstd -Xcompression-level 10 -b 1M"
+    imageStoreInternal.squashfsCompressionArgs
+  )
+  (checks.expectEq "image-store compression can be disabled" "-no-compression"
+    imageStoreUncompressedEval.config.cloister._internal.sandboxInternals.dev.squashfsCompressionArgs
   )
 ]

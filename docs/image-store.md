@@ -65,7 +65,7 @@ For each sandbox configuration in `image-store` mode:
 
 1. Cloister computes a sorted, unique list of store roots.
 1. It hashes that list to derive a stable store ID.
-1. It builds a `squashfs` image containing `nix/store` plus metadata.
+1. It builds a zstd level 10-compressed `squashfs` image with 1 MiB blocks containing `nix/store` plus metadata.
 1. The NixOS `cloister-image-store` module publishes the image under `cloister.imageStore.base/<store-id>.squashfs`.
 1. NixOS mounts that image read-only at `cloister.imageStore.mountBase/<store-id>`.
 1. At launch, Cloister verifies the mountpoint, confirms it is read-only, and checks the embedded metadata before bind-mounting `<mount>/nix/store` to `/nix/store` inside the sandbox.
@@ -84,6 +84,12 @@ cloister.imageStore = {
 ```
 
 The underlying image artifacts live in `/nix/store` and are still cleaned by normal Nix garbage collection.
+
+By default, generated `squashfs` files use zstd compression level 10 with 1 MiB blocks. To build uncompressed images instead:
+
+```nix
+cloister.imageStore.compression.enable = false;
+```
 
 Known limitation: image-store validation now checks that the configured mount exists, is a real read-only mountpoint, and carries the expected metadata identity, but it still depends on the host mount existing correctly. If the `cloister-image-store` NixOS module is not enabled or the mount has not come up yet, sandbox launch will fail closed instead of silently falling back to the host store.
 
