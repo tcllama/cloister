@@ -9,6 +9,11 @@ let
       enable = true;
       sandboxes = {
         hard.preset = "hardened";
+        hardAudio = {
+          preset = "hardened";
+          validators.enable = false;
+          audio.pipewire.enable = true;
+        };
         dev.preset = "developer";
         gui = {
           preset = "gui";
@@ -42,7 +47,7 @@ let
         chromium = {
           preset = "chromium";
           audio.pipewire.pulseOnly = false;
-          audio.pipewire.filters.enable = false;
+          audio.pipewire.filters.enable = true;
           sandbox.seccomp.allowChromiumSandbox = false;
         };
       };
@@ -65,6 +70,7 @@ checks.mkCheck "test-cloister-presets" [
   (checks.expectTrue "hardened enables validators" sandboxes.hard.validators.enable)
   (checks.expectFalse "hardened disables ssh" sandboxes.hard.ssh.enable)
   (checks.expectFalse "hardened disables dbus" sandboxes.hard.dbus.enable)
+  (checks.expectTrue "hardened pipewire opt-in enables filters" sandboxes.hardAudio.audio.pipewire.filters.enable)
   (checks.expectTrue "developer enables git" sandboxes.dev.git.enable)
   (checks.expectTrue "developer enables notifications portal default" sandboxes.dev.dbus.portal.notifications)
   (checks.expectTrue "developer enables ssh" sandboxes.dev.ssh.enable)

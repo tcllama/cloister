@@ -214,68 +214,10 @@ let
     };
   };
 
-  pulseCompatEval = hm {
+  nativeDefaultEval = hm {
     cloister = {
       enable = true;
       sandboxes.player.audio.pipewire.enable = true;
-    };
-  };
-
-  pulseaudioEval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.player.audio.pulseaudio.enable = true;
-    };
-  };
-
-  pulseaudioConflict = hm {
-    cloister = {
-      enable = true;
-      sandboxes.player.audio = {
-        pulseaudio.enable = true;
-        pipewire = {
-          enable = true;
-          pulseCompat.enable = true;
-        };
-      };
-    };
-  };
-
-  pulseOnlyPulseaudioConflict = hm {
-    cloister = {
-      enable = true;
-      sandboxes.player.audio = {
-        pulseaudio.enable = true;
-        pipewire = {
-          enable = true;
-          pulseOnly = true;
-          filters.enable = true;
-        };
-      };
-    };
-  };
-
-  pulseOnlyPulseCompatConflict = hm {
-    cloister = {
-      enable = true;
-      sandboxes.player.audio.pipewire = {
-        enable = true;
-        pulseOnly = true;
-        pulseCompat.enable = true;
-        filters.enable = true;
-      };
-    };
-  };
-
-  pulseOnlyAlsaConflict = hm {
-    cloister = {
-      enable = true;
-      sandboxes.player.audio.pipewire = {
-        enable = true;
-        pulseOnly = true;
-        filters.enable = true;
-        alsa.enable = true;
-      };
     };
   };
 
@@ -305,16 +247,6 @@ let
             execArgs = "%U; touch /tmp/pwned";
           };
         };
-      };
-    };
-  };
-
-  alsaEval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.mixer.audio.pipewire = {
-        enable = true;
-        alsa.enable = true;
       };
     };
   };
@@ -387,10 +319,7 @@ let
   sandboxConfig = eval.config.cloister._internal.sandboxConfigs.browser;
   pulseOnlyConfig = pulseOnlyEval.config.cloister._internal.sandboxConfigs.listener;
   pulseOnlyInternal = pulseOnlyEval.config.cloister._internal.sandboxInternals.listener;
-  pulseCompatConfig = pulseCompatEval.config.cloister._internal.sandboxConfigs.player;
-  pulseCompatInternal = pulseCompatEval.config.cloister._internal.sandboxInternals.player;
-  pulseaudioConfig = pulseaudioEval.config.cloister._internal.sandboxConfigs.player;
-  alsaConfig = alsaEval.config.cloister._internal.sandboxConfigs.mixer;
+  nativeDefaultConfig = nativeDefaultEval.config.cloister._internal.sandboxConfigs.player;
   pulseOnlyNoDbusInternal = pulseOnlyNoDbusEval.config.cloister._internal.sandboxInternals.listener;
   alphaConfig = multiPipewireEval.config.cloister._internal.sandboxConfigs.alpha;
   betaConfig = multiPipewireEval.config.cloister._internal.sandboxConfigs.beta;
@@ -542,32 +471,8 @@ let
     (checks.expectContains "pulse-only disables dbus support when dbus is off" "support.dbus = false"
       pulseOnlyNoDbusInternal.pipewirePulseOnlyConfText
     )
-    (checks.expectContains "pulseCompat wrapper path is rendered"
-      "cloister-pipewire-pulse-wrapper-player"
-      pulseCompatConfig.pipewire_pulse_wrapper_path
-    )
-    (checks.expectContains "pulseCompat wrapper starts target in a new session" ''/bin/setsid "$@" &''
-      pulseCompatInternal.pipewirePulseWrapperText
-    )
-    (checks.expectContains "pulseCompat wrapper forwards signals to the child process group"
-      ''kill "-$signal" -- "-$child_pid"''
-      pulseCompatInternal.pipewirePulseWrapperText
-    )
-    (checks.expectEq "pulseCompat keeps native pipewire socket" "pipewire-0"
-      pulseCompatConfig.pipewire_socket_name
-    )
-    (checks.expectEq "pulseaudio socket name is rendered" "pulse/native"
-      pulseaudioConfig.pulseaudio_socket_name
-    )
-    (checks.expectContains "alsa sets plugin dir" ''"ALSA_PLUGIN_DIR"'' (
-      builtins.toJSON alsaConfig.static_bwrap_args
-    ))
-    (checks.expectContains "alsa adds compat config dir" "/etc/alsa/conf.d" (
-      builtins.toJSON alsaConfig.static_bwrap_args
-    ))
-    (checks.expectContains "alsa links pipewire compatibility config"
-      "/etc/alsa/conf.d/50-pipewire.conf"
-      (builtins.toJSON alsaConfig.static_bwrap_args)
+    (checks.expectEq "pipewire defaults to filtered native socket" "cloister/pipewire/player"
+      nativeDefaultConfig.pipewire_socket_name
     )
     (checks.expectEq "pipewire filter socket names stay per-sandbox" "cloister/pipewire/alpha"
       alphaConfig.pipewire_socket_name
@@ -586,27 +491,12 @@ let
       anonymizeNativePipewire.assertions
       "it is not possible to anonymize a PipeWire socket"
     )
-    (checks.expectAssertionMessage "pulseOnly requires filters" pulseOnlyWithoutFilters.assertions
-      "audio.pipewire.pulseOnly requires audio.pipewire.filters.enable = true"
+    (checks.expectAssertionMessage "pipewire requires filters" pulseOnlyWithoutFilters.assertions
+      "audio.pipewire.enable requires audio.pipewire.filters.enable = true"
     )
     (checks.expectAssertionMessage "desktop entry execArgs rejects metacharacters"
       invalidDesktopExecArgs.assertions
       "gui.desktopEntry.execArgs must not contain shell metacharacters"
-    )
-    (checks.expectAssertionMessage "pulseCompat rejects pulseaudio passthrough"
-      pulseaudioConflict.assertions
-      "audio.pipewire.pulseCompat.enable and audio.pulseaudio.enable are mutually exclusive"
-    )
-    (checks.expectAssertionMessage "pulseOnly rejects pulseaudio passthrough"
-      pulseOnlyPulseaudioConflict.assertions
-      "audio.pipewire.pulseOnly and audio.pulseaudio.enable are mutually exclusive"
-    )
-    (checks.expectAssertionMessage "pulseOnly rejects pulseCompat"
-      pulseOnlyPulseCompatConflict.assertions
-      "audio.pipewire.pulseOnly and audio.pipewire.pulseCompat.enable are mutually exclusive"
-    )
-    (checks.expectAssertionMessage "pulseOnly rejects alsa" pulseOnlyAlsaConflict.assertions
-      "audio.pipewire.pulseOnly cannot be combined with audio.pipewire.alsa.enable"
     )
     (checks.expectAssertionMessage "pulseOnly rejects video input" pulseOnlyVideoConflict.assertions
       "audio.pipewire.pulseOnly is audio-only and does not support audio.pipewire.filters.videoIn"

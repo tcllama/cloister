@@ -923,7 +923,7 @@ let
 
       pipewireSocketName =
         if sCfg.audio.pipewire.enable && !sCfg.audio.pipewire.pulseOnly then
-          if sCfg.audio.pipewire.filters.enable then "cloister/pipewire/${name}" else "pipewire-0"
+          "cloister/pipewire/${name}"
         else
           null;
 

@@ -297,28 +297,12 @@ in
     message = "cloister.sandboxes.${name}: network.namespace requires network.enable = true so bubblewrap preserves the joined network namespace.";
   }
   {
-    assertion = !(sCfg.audio.pipewire.pulseCompat.enable && sCfg.audio.pulseaudio.enable);
-    message = "cloister.sandboxes.${name}: audio.pipewire.pulseCompat.enable and audio.pulseaudio.enable are mutually exclusive. Use pulseCompat for filtered in-sandbox bridging, or pulseaudio for direct host socket forwarding.";
-  }
-  {
-    assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pulseaudio.enable);
-    message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly and audio.pulseaudio.enable are mutually exclusive. Use pulseOnly for filtered PulseAudio-only access, or pulseaudio for direct host socket forwarding.";
-  }
-  {
     assertion = !sCfg.audio.pipewire.pulseOnly || sCfg.audio.pipewire.enable;
     message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly requires audio.pipewire.enable = true so Cloister can create the filtered PipeWire backend socket used by the PulseAudio proxy.";
   }
   {
-    assertion = !sCfg.audio.pipewire.pulseOnly || sCfg.audio.pipewire.filters.enable;
-    message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly requires audio.pipewire.filters.enable = true because the PulseAudio proxy connects to the per-sandbox filtered PipeWire backend socket.";
-  }
-  {
-    assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pipewire.pulseCompat.enable);
-    message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly and audio.pipewire.pulseCompat.enable are mutually exclusive. pulseOnly already provides a PulseAudio-compatible socket without exposing native PipeWire inside the sandbox.";
-  }
-  {
-    assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pipewire.alsa.enable);
-    message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly cannot be combined with audio.pipewire.alsa.enable because pulseOnly does not expose native PipeWire inside the sandbox.";
+    assertion = !sCfg.audio.pipewire.enable || sCfg.audio.pipewire.filters.enable;
+    message = "cloister.sandboxes.${name}: audio.pipewire.enable requires audio.pipewire.filters.enable = true because unfiltered PipeWire socket forwarding is not supported.";
   }
   {
     assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pipewire.filters.videoIn);

@@ -2252,15 +2252,8 @@ fn run() -> i32 {
         ssh_filter_handle = None;
     }
 
-    // PulseAudio
-    if let Some(socket_name) = &config.pulseaudio_socket_name {
-        extra_args.extend(features::pulseaudio_args_with_dest(
-            &host_xdg_runtime_dir,
-            socket_name,
-            &sandbox_xdg_runtime_dir,
-            "pulse/native",
-        ));
-    } else if let Some(bridge) = &pulse_bridge {
+    // Pulse-only proxy
+    if let Some(bridge) = &pulse_bridge {
         let sandbox_socket = format!("{sandbox_xdg_runtime_dir}/pulse/native");
         extra_args.extend(features::pulseaudio_args_with_source(
             &bridge.socket_path,
@@ -2591,7 +2584,6 @@ fn run() -> i32 {
         };
 
     // --- 11. Spawn bwrap ---
-    let run_cmd = build_session_run_cmd(&config, run_cmd, is_interactive);
     INTERACTIVE_MODE.store(is_interactive, Ordering::Release);
 
     let config_for_bwrap = SandboxConfig {
@@ -2793,7 +2785,6 @@ fn cleanup_and_exit(state: CleanupState) -> i32 {
 fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
     config.dbus_enable
         || config.wayland_enable
-        || config.pulseaudio_socket_name.is_some()
         || config.pipewire_pulse_config_path.is_some()
         || config.pipewire_socket_name.is_some()
         || config.worker_broker.enable
@@ -2835,24 +2826,6 @@ fn ssh_filter_socket_path(host_xdg_runtime_dir: &str, pid: u32) -> String {
     } else {
         format!("{host_xdg_runtime_dir}/cloister-ssh-filter-{pid}")
     }
-}
-
-fn build_session_run_cmd(
-    config: &SandboxConfig,
-    run_cmd: Vec<String>,
-    interactive: bool,
-) -> Vec<String> {
-    let Some(wrapper_path) = &config.pipewire_pulse_wrapper_path else {
-        return run_cmd;
-    };
-
-    let mut wrapped = vec![wrapper_path.clone()];
-    if interactive {
-        wrapped.push("--interactive".to_string());
-    }
-    wrapped.push("--".to_string());
-    wrapped.extend(run_cmd);
-    wrapped
 }
 
 /// Parse Cloister-owned flags and remaining sandbox arguments.
@@ -2980,10 +2953,8 @@ mod tests {
     fn config_with_flags(
         dbus_enable: bool,
         wayland_enable: bool,
-        pulseaudio_socket_name: Option<String>,
         pipewire_socket_name: Option<String>,
         pipewire_pulse_config_path: Option<String>,
-        pipewire_pulse_wrapper_path: Option<String>,
         ssh_enable: bool,
     ) -> SandboxConfig {
         serde_json::from_value(serde_json::json!({
@@ -3002,10 +2973,8 @@ mod tests {
             "git_path": "/nix/store/xxx-git/bin/git",
             "dbus_enable": dbus_enable,
             "wayland_enable": wayland_enable,
-            "pulseaudio_socket_name": pulseaudio_socket_name,
             "pipewire_socket_name": pipewire_socket_name,
             "pipewire_pulse_config_path": pipewire_pulse_config_path,
-            "pipewire_pulse_wrapper_path": pipewire_pulse_wrapper_path,
             "ssh_enable": ssh_enable
         }))
         .expect("valid config")
@@ -4643,7 +4612,7 @@ mod tests {
 
     #[test]
     fn pulse_proxy_identity_uses_sandbox_home_leaf() {
-        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        let mut config = config_with_flags(false, false, None, None, false);
         config.anonymize = true;
         config.sandbox_home = "/home/ubuntu".to_string();
 
@@ -4652,7 +4621,7 @@ mod tests {
 
     #[test]
     fn pulse_proxy_identity_rejects_missing_leaf() {
-        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        let mut config = config_with_flags(false, false, None, None, false);
         config.anonymize = true;
         config.sandbox_home = "/home/".to_string();
 
@@ -4668,7 +4637,7 @@ mod tests {
 
     #[test]
     fn pulse_proxy_command_sets_anonymous_identity() {
-        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        let mut config = config_with_flags(false, false, None, None, false);
         config.anonymize = true;
         config.bwrap_path = "/nix/store/xxx-bubblewrap-subset-pid/bin/bwrap".to_string();
         config.sandbox_home = "/home/ubuntu".to_string();
@@ -4775,7 +4744,7 @@ mod tests {
             store_id: Some("abc123".to_string()),
             store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
             store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
-            ..config_with_flags(false, false, None, None, None, None, false)
+            ..config_with_flags(false, false, None, None, false)
         };
 
         let err = ensure_image_store_mounted(&config, "test").unwrap_err();
@@ -4795,7 +4764,7 @@ mod tests {
             store_id: Some("abc123".to_string()),
             store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
             store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
-            ..config_with_flags(false, false, None, None, None, None, false)
+            ..config_with_flags(false, false, None, None, false)
         };
 
         let err = ensure_image_store_mounted(&config, "test").unwrap_err();
@@ -4863,7 +4832,7 @@ mod tests {
 
     #[test]
     fn pulse_proxy_command_rejects_missing_image_store_mount_path() {
-        let mut config = config_with_flags(false, false, None, None, None, None, false);
+        let mut config = config_with_flags(false, false, None, None, false);
         config.store_mode = StoreMode::ImageStore;
         config.store_id = Some("abc123".to_string());
         config.store_image_path = Some("/var/lib/cloister/images/abc123.squashfs".to_string());
@@ -4897,7 +4866,7 @@ mod tests {
             store_id: Some("abc123".to_string()),
             store_image_path: Some("/var/lib/cloister/images/abc123.squashfs".to_string()),
             store_mount_path: Some(mount_path.to_string_lossy().into_owned()),
-            ..config_with_flags(false, false, None, None, None, None, false)
+            ..config_with_flags(false, false, None, None, false)
         };
 
         let err = ensure_image_store_mounted(&config, "test").unwrap_err();
@@ -5205,7 +5174,7 @@ mod tests {
 
     #[test]
     fn broker_launcher_prepare_run_cmd_rejects_empty_command_argv() {
-        let config = config_with_flags(false, false, None, None, None, None, false);
+        let config = config_with_flags(false, false, None, None, false);
         let selector = BrokerLaunchSelector {
             profile: "overlay".to_string(),
             sandbox: "worker".to_string(),
@@ -5217,7 +5186,7 @@ mod tests {
 
     #[test]
     fn broker_launcher_prepare_run_cmd_rejects_c_shorthand() {
-        let config = config_with_flags(false, false, None, None, None, None, false);
+        let config = config_with_flags(false, false, None, None, false);
         let selector = BrokerLaunchSelector {
             profile: "overlay".to_string(),
             sandbox: "worker".to_string(),
@@ -5232,7 +5201,7 @@ mod tests {
 
     #[test]
     fn prepare_run_cmd_rejects_bare_c_flag() {
-        let config = config_with_flags(false, false, None, None, None, None, false);
+        let config = config_with_flags(false, false, None, None, false);
         let result = prepare_run_cmd(&config, &s(&["-c"]), None);
         assert_eq!(result, Err("`-c` requires a command"));
     }
@@ -5267,9 +5236,7 @@ mod tests {
         let config = config_with_flags(
             false,
             false,
-            Some("pulse/native".to_string()),
-            None,
-            None,
+            Some("cloister/pipewire/test".to_string()),
             None,
             false,
         );
@@ -5284,14 +5251,14 @@ mod tests {
 
     #[test]
     fn xdg_runtime_dir_not_required_when_features_disabled() {
-        let config = config_with_flags(false, false, None, None, None, None, false);
+        let config = config_with_flags(false, false, None, None, false);
         let result = validate_xdg_runtime_dir(&config, "");
         assert!(result.is_ok());
     }
 
     #[test]
     fn xdg_runtime_dir_present_satisfies_requirement() {
-        let config = config_with_flags(false, true, None, None, None, None, false);
+        let config = config_with_flags(false, true, None, None, false);
         let result = validate_xdg_runtime_dir(&config, "/run/user/1000");
         assert!(result.is_ok());
     }
@@ -5302,9 +5269,7 @@ mod tests {
             false,
             false,
             None,
-            None,
             Some("/nix/store/xxx-pulse.conf".to_string()),
-            None,
             false,
         );
         let result = validate_xdg_runtime_dir(&config, "");
@@ -5319,69 +5284,6 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("XDG_RUNTIME_DIR must be set"));
-    }
-
-    #[test]
-    fn session_command_uses_wrapper_for_interactive_shells() {
-        let config = config_with_flags(
-            false,
-            false,
-            None,
-            Some("pipewire-0".to_string()),
-            None,
-            Some("/nix/store/xxx-wrapper".to_string()),
-            false,
-        );
-        let run_cmd = vec!["/nix/store/xxx-zsh/bin/zsh".to_string(), "-i".to_string()];
-
-        assert_eq!(
-            build_session_run_cmd(&config, run_cmd, true),
-            vec![
-                "/nix/store/xxx-wrapper",
-                "--interactive",
-                "--",
-                "/nix/store/xxx-zsh/bin/zsh",
-                "-i",
-            ]
-        );
-    }
-
-    #[test]
-    fn session_command_uses_wrapper_for_noninteractive_commands() {
-        let config = config_with_flags(
-            false,
-            false,
-            None,
-            Some("pipewire-0".to_string()),
-            None,
-            Some("/nix/store/xxx-wrapper".to_string()),
-            false,
-        );
-        let run_cmd = vec!["firefox".to_string(), "--new-window".to_string()];
-
-        assert_eq!(
-            build_session_run_cmd(&config, run_cmd, false),
-            vec!["/nix/store/xxx-wrapper", "--", "firefox", "--new-window",]
-        );
-    }
-
-    #[test]
-    fn session_command_skips_wrapper_when_not_configured() {
-        let config = config_with_flags(
-            false,
-            false,
-            None,
-            Some("pipewire-0".to_string()),
-            None,
-            None,
-            false,
-        );
-        let run_cmd = vec!["firefox".to_string()];
-
-        assert_eq!(
-            build_session_run_cmd(&config, run_cmd.clone(), false),
-            run_cmd
-        );
     }
 
     #[test]

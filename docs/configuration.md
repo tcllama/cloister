@@ -611,31 +611,24 @@ Passes arbitrary device nodes into the sandbox with `--dev-bind`. Missing device
 
 See the [examples/](../examples/) directory for complete, importable sandbox configurations.
 
-### PipeWire vs PulseAudio
+### PipeWire audio modes
 
-On modern NixOS the default sound server is PipeWire, which also exposes a PulseAudio-compatible socket. Cloister can forward either socket into the sandbox:
+Cloister supports two PipeWire-backed audio modes. Both use a per-sandbox filtered PipeWire backend socket; direct host PulseAudio passthrough, unfiltered PipeWire forwarding, in-sandbox `pipewire-pulse` compatibility, and ALSA compatibility are not supported.
 
-| Option | Protocol | Audio | Screen sharing / cameras | Filtering |
-|--------|----------|-------|--------------------------|-----------|
-| `audio.pipewire.enable` | PipeWire native | Yes | Yes | Yes (`filters.*`) |
-| `audio.pipewire.pulseOnly` | PulseAudio only | Yes | No | Yes (`filters.audioOut`, `audioIn`, `control`) |
-| `audio.pipewire.pulseCompat.enable` | PipeWire + PulseAudio bridge | Yes | Yes | Yes (`filters.*`) |
-| `audio.pulseaudio.enable` | PulseAudio | Yes | No | No |
+| Option | Protocol exposed inside sandbox | Audio | Screen sharing / cameras | Filtering |
+|--------|---------------------------------|-------|--------------------------|-----------|
+| `audio.pipewire.enable` | PipeWire native | Yes | Yes | Always (`filters.*`) |
+| `audio.pipewire.pulseOnly` | PulseAudio-compatible proxy | Yes | No | Always (`filters.audioOut`, `audioIn`, `control`) |
 
-**Recommended approach**: use `audio.pipewire.pulseOnly = true` for audio-only sandboxes that need playback, optional microphone access, and volume control without exposing native PipeWire inside the sandbox. Use full `audio.pipewire` when the sandbox also needs cameras, screen sharing, or native PipeWire clients. The `pulseCompat` bridge runs `pipewire-pulse` inside the sandbox so `libpulse` apps work transparently on top of native PipeWire filtering.
+Use `audio.pipewire.pulseOnly = true` for audio-only sandboxes that need playback, optional microphone access, and volume control without exposing native PipeWire inside the sandbox. Use filtered native `audio.pipewire` when the sandbox also needs cameras, screen sharing, or native PipeWire clients.
 
-ALSA compatibility (`alsa.enable`) is opt-in and only needed for software that speaks raw ALSA (e.g. some games, Wine, JACK bridges). Most applications use PulseAudio or PipeWire natively.
-
-Fall back to `audio.pulseaudio` only for sandboxes that need direct host PulseAudio socket forwarding without PipeWire. Note that `pulseCompat` and `pulseaudio` are mutually exclusive.
-
-### PipeWire
+### Filtered native PipeWire
 
 ```nix
 cloister.sandboxes.dev.audio.pipewire = {
   enable = true;
-  # alsa.enable = true;  # only needed for raw-ALSA software (games, Wine)
   filters = {
-    enable = true;
+    # filters.enable defaults to true when PipeWire audio is enabled.
     audioOut = true;  # speakers (default)
     # audioIn = true; # microphones
     # videoIn = true; # webcams (also needs video.enable)
@@ -643,11 +636,9 @@ cloister.sandboxes.dev.audio.pipewire = {
 };
 ```
 
-Forwards the PipeWire native socket (`$XDG_RUNTIME_DIR/pipewire-0`) into the sandbox. When `filters.enable = true`, a dedicated restricted socket is created instead, exposing only the device classes and capabilities you specify while still allowing clients to create the playback/capture streams needed for enabled sinks, microphones, and cameras. See the [audio guide](audio.md) for the full option reference.
+Creates a dedicated restricted PipeWire socket, exposing only the device classes and capabilities you specify while still allowing clients to create the playback/capture streams needed for enabled sinks, microphones, and cameras. See the [audio guide](audio.md) for the full option reference.
 
-### PulseAudio
-
-Filtered PulseAudio-only access:
+### Pulse-only proxy
 
 ```nix
 cloister.sandboxes.dev.audio.pipewire = {
@@ -661,15 +652,7 @@ cloister.sandboxes.dev.audio.pipewire = {
 };
 ```
 
-This keeps the backend on filtered PipeWire, but exposes only a PulseAudio-compatible socket inside the sandbox. `audioOut`, `audioIn`, and `control` still apply. Native PipeWire tools and camera/screencast flows are intentionally unavailable in this mode.
-
-Direct host PulseAudio passthrough:
-
-```nix
-cloister.sandboxes.dev.audio.pulseaudio.enable = true;
-```
-
-Forwards the PulseAudio socket for audio playback and recording. Works with both PulseAudio and PipeWire's PulseAudio compatibility layer. Does not support filtering — the sandbox gets unrestricted audio access.
+This keeps the backend on filtered PipeWire, but exposes only a PulseAudio-compatible proxy socket inside the sandbox. `audioOut`, `audioIn`, and `control` still apply. Native PipeWire tools and camera/screencast flows are intentionally unavailable in this mode.
 
 ### Webcam/Camera
 
@@ -887,18 +870,15 @@ See the sections above for usage examples and explanations.
 | `dbus.policies.see` | list of str | `[]` | D-Bus SEE allowlist |
 | `dbus.policies.call` | attrsOf (list of str) | `{}` | Per-name call rules |
 | `dbus.policies.broadcast` | attrsOf (list of str) | `{}` | Per-name broadcast rules |
-| `audio.pulseaudio.enable` | bool | `false` | Forward PulseAudio socket for audio |
-| `audio.pipewire.enable` | bool | `false` | Forward PipeWire native socket |
-| `audio.pipewire.pulseOnly` | bool | `false` | Expose only a filtered PulseAudio-compatible socket while keeping PipeWire hidden from the sandbox |
-| `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (*auto-enabled by `pulseOnly`) |
+| `audio.pipewire.enable` | bool | `false` | Enable filtered PipeWire-backed audio |
+| `audio.pipewire.pulseOnly` | bool | `false` | Expose only a filtered PulseAudio-compatible proxy socket while keeping PipeWire hidden from the sandbox |
+| `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (*auto-enabled by `audio.pipewire.enable`) |
 | `audio.pipewire.filters.audioOut` | bool | `true` | Allow playback to speakers/sinks when filtering is enabled |
 | `audio.pipewire.filters.audioIn` | bool | `false` | Allow microphone access when filtering is enabled |
 | `audio.pipewire.filters.videoIn` | bool | `false` | Allow camera nodes when filtering is enabled |
 | `audio.pipewire.filters.control` | bool | `false` | Allow volume and mute changes on visible nodes |
 | `audio.pipewire.filters.routing` | bool | `false` | Allow default-device and stream-routing changes |
-| `audio.pipewire.alsa.enable` | bool | `false` | Expose ALSA compatibility via PipeWire's ALSA plugin (only needed for raw-ALSA software) |
 | `audio.pipewire.dbus.enable` | bool | `true` | Let sandboxed PipeWire clients use D-Bus support when a filtered bus is available |
-| `audio.pipewire.pulseCompat.enable` | bool | `pipewire.enable && !pulseaudio.enable && !pulseOnly` | Run in-sandbox pipewire-pulse bridge for PulseAudio protocol compatibility |
 | `video.enable` | bool | `false` | Bind /dev/video* devices for webcam/camera access |
 | `printing.enable` | bool | `false` | Forward CUPS printing socket |
 | `fido2.enable` | bool | `false` | Bind /dev/hidraw\* devices for FIDO2/U2F security key access |

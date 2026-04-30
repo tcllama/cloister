@@ -46,8 +46,6 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub ssh_enable: bool,
     #[serde(default)]
-    pub pulseaudio_socket_name: Option<String>,
-    #[serde(default)]
     pub pipewire_backend_socket_name: Option<String>,
     #[serde(default)]
     pub pipewire_socket_name: Option<String>,
@@ -55,8 +53,6 @@ pub struct SandboxConfig {
     pub pipewire_pulse_binary_path: Option<String>,
     #[serde(default)]
     pub pipewire_pulse_config_path: Option<String>,
-    #[serde(default)]
-    pub pipewire_pulse_wrapper_path: Option<String>,
     #[serde(default)]
     pub fido2_enable: bool,
     #[serde(default)]
@@ -417,8 +413,6 @@ mod tests {
         assert_eq!(config.wrapped_command_shell_args, vec!["-i"]);
         assert!(!config.network_enable);
         assert!(!config.wayland_enable);
-        assert!(config.pipewire_pulse_wrapper_path.is_none());
-        assert!(config.pulseaudio_socket_name.is_none());
         assert!(config.pipewire_backend_socket_name.is_none());
         assert!(config.pipewire_pulse_binary_path.is_none());
         assert!(config.pipewire_pulse_config_path.is_none());
@@ -448,11 +442,9 @@ mod tests {
             "ssh_enable": true,
             "ssh_allow_fingerprints": ["SHA256:abc", "SHA256:def"],
             "ssh_filter_timeout_seconds": 30,
-            "pulseaudio_socket_name": "pulse/native",
             "pipewire_backend_socket_name": "cloister/pipewire/dev",
             "pipewire_pulse_binary_path": "/nix/store/xxx-pipewire/bin/pipewire-pulse",
             "pipewire_pulse_config_path": "/nix/store/xxx-pulse.conf",
-            "pipewire_pulse_wrapper_path": "/nix/store/xxx-wrapper",
             "home_directory": "/home/user",
             "sandbox_home": "/home/ubuntu",
             "anonymize": true,
@@ -485,10 +477,6 @@ mod tests {
         assert!(config.wayland_security_context);
         assert!(config.ssh_filter_enabled());
         assert_eq!(
-            config.pulseaudio_socket_name.as_deref(),
-            Some("pulse/native")
-        );
-        assert_eq!(
             config.pipewire_backend_socket_name.as_deref(),
             Some("cloister/pipewire/dev")
         );
@@ -499,10 +487,6 @@ mod tests {
         assert_eq!(
             config.pipewire_pulse_config_path.as_deref(),
             Some("/nix/store/xxx-pulse.conf")
-        );
-        assert_eq!(
-            config.pipewire_pulse_wrapper_path.as_deref(),
-            Some("/nix/store/xxx-wrapper")
         );
         assert_eq!(config.ssh_allow_fingerprints.len(), 2);
         assert_eq!(config.ssh_filter_timeout_seconds, 30);

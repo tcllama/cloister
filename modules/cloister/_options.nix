@@ -128,62 +128,6 @@ let
         ${pipewireContextProperties}
       '';
 
-      pipewirePulseConf = pkgs.writeText "cloister-pipewire-pulse.conf" ''
-        # Cloister: pipewire-pulse.conf with module-rt removed for sandbox use
-        ${pipewireContextProperties}
-        context.spa-libs = {
-            audio.convert.* = audioconvert/libspa-audioconvert
-            support.*       = support/libspa-support
-        }
-        context.modules = [
-            { name = libpipewire-module-protocol-native }
-            { name = libpipewire-module-client-node }
-            { name = libpipewire-module-adapter }
-            { name = libpipewire-module-metadata }
-            { name = libpipewire-module-protocol-pulse
-                args = { }
-            }
-        ]
-        context.exec = [ ]
-        pulse.cmd = [
-            { cmd = "load-module" args = "module-always-sink" flags = [ ]
-                condition = [ { pulse.cmd.always-sink = !false } ] }
-            { cmd = "load-module" args = "module-device-manager" flags = [ ]
-                condition = [ { pulse.cmd.device-manager = !false } ] }
-            { cmd = "load-module" args = "module-device-restore" flags = [ ]
-                condition = [ { pulse.cmd.device-restore = !false } ] }
-            { cmd = "load-module" args = "module-stream-restore" flags = [ ]
-                condition = [ { pulse.cmd.stream-restore = !false } ] }
-        ]
-        stream.properties = { }
-        pulse.properties = {
-            server.address = [ "unix:native" ]
-        }
-        pulse.rules = [
-            {
-                matches = [ { application.process.binary = "teams" }
-                            { application.process.binary = "teams-insiders" }
-                            { application.process.binary = "teams-for-linux" }
-                            { application.process.binary = "skypeforlinux" } ]
-                actions = { quirks = [ force-s16-info ] }
-            }
-            {
-                matches = [ { application.process.binary = "firefox" } ]
-                actions = { quirks = [ remove-capture-dont-move ] }
-            }
-            {
-                matches = [ { application.name = "~speech-dispatcher.*" } ]
-                actions = {
-                    update-props = {
-                        pulse.min.req      = 512/48000
-                        pulse.min.quantum  = 512/48000
-                        pulse.idle.timeout = 5
-                    }
-                }
-            }
-        ]
-      '';
-
       customShellDest = "${sandboxHome}/.config/cl-shell/${name}/custom";
       customShellSource = "$HOME/.config/cl-shell/${name}/custom";
 
@@ -1211,33 +1155,17 @@ let
         };
 
         audio = {
-          pulseaudio = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = ''
-                Forward PulseAudio socket into the sandbox for audio playback and recording.
-                Works with both PulseAudio and PipeWire's PulseAudio compatibility layer.
-
-                WARNING: This grants full audio access including microphone recording.
-                PulseAudio does not support per-client restriction of recording vs playback.
-                Do not enable this for sandboxes that should not have microphone access.
-              '';
-            };
-          };
-
           pipewire = {
             enable = lib.mkOption {
               type = lib.types.bool;
               default = false;
               description = ''
-                Forward the PipeWire native socket into the sandbox. Required for
-                portal-based screen sharing (ScreenCast) and camera access,
-                and for applications that use PipeWire directly.
+                Enable PipeWire-backed audio. Native PipeWire exposure is always
+                through Cloister's per-sandbox filtered socket; unfiltered host
+                PipeWire forwarding is not supported.
 
-                When enabled, pulseCompat is also enabled by default, providing
-                PulseAudio protocol compatibility. Mutually exclusive with
-                audio.pulseaudio.enable unless pulseCompat is explicitly disabled.
+                Set audio.pipewire.pulseOnly = true for applications that need a
+                PulseAudio-compatible socket instead of native PipeWire.
               '';
             };
 
@@ -1316,22 +1244,6 @@ let
               };
             };
 
-            alsa = {
-              enable = lib.mkOption {
-                type = lib.types.bool;
-                default = false;
-                description = ''
-                  Expose ALSA compatibility inside the sandbox via PipeWire's ALSA
-                  plugin. Sets ALSA_PLUGIN_DIR and symlinks PipeWire ALSA config
-                  files into /etc/alsa/conf.d/.
-
-                  Most applications use PulseAudio or PipeWire natively, so this is
-                  only needed for software that speaks raw ALSA (e.g. some games,
-                  Wine, JACK bridges).
-                '';
-              };
-            };
-
             dbus = {
               enable = lib.mkOption {
                 type = lib.types.bool;
@@ -1344,23 +1256,6 @@ let
               };
             };
 
-            pulseCompat = {
-              enable = lib.mkOption {
-                type = lib.types.bool;
-                default = config.audio.pipewire.enable && !config.audio.pulseaudio.enable;
-                description = ''
-                  Run a pipewire-pulse bridge daemon inside the sandbox to provide
-                  PulseAudio protocol compatibility. Applications using libpulse
-                  will connect to this local daemon, which proxies through the
-                  forwarded PipeWire native socket — preserving WirePlumber filter
-                  policies.
-
-                  Defaults to true when audio.pipewire.enable is true and
-                  audio.pulseaudio.enable is false and pulseOnly is disabled.
-                  Mutually exclusive with audio.pulseaudio.enable.
-                '';
-              };
-            };
           };
         };
 
@@ -1491,11 +1386,9 @@ let
           dbus.enable = lib.mkDefault false;
 
           audio = {
-            pulseaudio.enable = lib.mkDefault false;
             pipewire = {
               enable = lib.mkDefault false;
               pulseOnly = lib.mkDefault false;
-              filters.enable = lib.mkDefault false;
             };
           };
         })
@@ -1511,7 +1404,6 @@ let
           dbus.portal.notifications = lib.mkDefault true;
 
           audio = {
-            pulseaudio.enable = lib.mkDefault false;
             pipewire = {
               enable = lib.mkDefault false;
               pulseOnly = lib.mkDefault false;
@@ -1530,7 +1422,6 @@ let
           gui.wayland.enable = lib.mkDefault true;
 
           audio = {
-            pulseaudio.enable = lib.mkDefault false;
             pipewire = {
               enable = lib.mkDefault false;
               pulseOnly = lib.mkDefault false;
@@ -1551,7 +1442,6 @@ let
           sandbox.seccomp.allowChromiumSandbox = lib.mkDefault true;
 
           audio = {
-            pulseaudio.enable = lib.mkDefault false;
             pipewire = {
               enable = lib.mkDefault true;
               pulseOnly = lib.mkDefault true;
@@ -1729,9 +1619,6 @@ let
                   TZ = "UTC";
                 }
               ))
-              (lib.mkIf config.audio.pipewire.alsa.enable {
-                ALSA_PLUGIN_DIR = lib.mkDefault "${pkgs.pipewire}/lib/alsa-lib";
-              })
             ];
 
             passthroughEnv = lib.mkDefault (
@@ -1751,10 +1638,7 @@ let
             );
           };
 
-          audio.pipewire.filters.enable = lib.mkDefault config.audio.pipewire.pulseOnly;
-          audio.pipewire.pulseCompat.enable = lib.mkOverride 900 (
-            config.audio.pipewire.enable && !config.audio.pulseaudio.enable && !config.audio.pipewire.pulseOnly
-          );
+          audio.pipewire.filters.enable = lib.mkDefault config.audio.pipewire.enable;
 
           gui = {
             # Auto-enable GPU when Wayland is active
@@ -1807,10 +1691,6 @@ let
               "/run/flatpak"
               "/run/flatpak/doc"
             ])
-            (lib.mkIf config.audio.pipewire.alsa.enable [
-              "/etc/alsa"
-              "/etc/alsa/conf.d"
-            ])
             (lib.mkIf pipewireNativeEnabled [
               "${sandboxHome}/.config/pipewire"
               "${sandboxHome}/.config/pipewire/client.conf.d"
@@ -1822,22 +1702,6 @@ let
               {
                 target = "${pipewireClientConf}";
                 link = "${sandboxHome}/.config/pipewire/client.conf.d/99-cloister.conf";
-              }
-            ])
-            (lib.mkIf config.audio.pipewire.alsa.enable [
-              {
-                target = "${pkgs.pipewire}/share/alsa/alsa.conf.d/50-pipewire.conf";
-                link = "/etc/alsa/conf.d/50-pipewire.conf";
-              }
-              {
-                target = "${pkgs.pipewire}/share/alsa/alsa.conf.d/99-pipewire-default.conf";
-                link = "/etc/alsa/conf.d/99-pipewire-default.conf";
-              }
-            ])
-            (lib.mkIf config.audio.pipewire.pulseCompat.enable [
-              {
-                target = "${pipewirePulseConf}";
-                link = "${sandboxHome}/.config/pipewire/pipewire-pulse.conf";
               }
             ])
           ];

@@ -33,25 +33,6 @@ pub fn pulseaudio_args_with_source(host_socket: &str, sandbox_socket: &str) -> V
     ]
 }
 
-/// Build PulseAudio forwarding arguments if the socket exists and is valid.
-pub fn pulseaudio_args(xdg_runtime_dir: &str, socket_name: &str) -> Vec<String> {
-    let socket = format!("{xdg_runtime_dir}/{socket_name}");
-    let sandbox_socket = format!("{xdg_runtime_dir}/pulse/native");
-    pulseaudio_args_with_source(&socket, &sandbox_socket)
-}
-
-/// Build PulseAudio forwarding arguments with an explicit sandbox runtime dir.
-pub fn pulseaudio_args_with_dest(
-    host_xdg_runtime_dir: &str,
-    socket_name: &str,
-    sandbox_xdg_runtime_dir: &str,
-    sandbox_socket_name: &str,
-) -> Vec<String> {
-    let socket = format!("{host_xdg_runtime_dir}/{socket_name}");
-    let sandbox_socket = format!("{sandbox_xdg_runtime_dir}/{sandbox_socket_name}");
-    pulseaudio_args_with_source(&socket, &sandbox_socket)
-}
-
 /// Build Wayland forwarding arguments (non-security-context mode).
 pub fn wayland_raw_args(host_xdg_runtime_dir: &str, sandbox_xdg_runtime_dir: &str) -> Vec<String> {
     let display = match std::env::var("WAYLAND_DISPLAY") {
@@ -1269,35 +1250,6 @@ mod tests {
             unique.len(),
             "Expected no duplicate V4L2 sysfs paths"
         );
-    }
-
-    #[test]
-    fn pulseaudio_args_with_valid_socket() {
-        use std::os::unix::net::UnixListener;
-
-        let dir = std::env::temp_dir().join(format!("cloister-pulse-test-{}", std::process::id()));
-        let pulse_dir = dir.join("pulse");
-        std::fs::create_dir_all(&pulse_dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::set_permissions(&pulse_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-        let sock_path = pulse_dir.join("native");
-        let _listener = UnixListener::bind(&sock_path).unwrap();
-
-        let args = pulseaudio_args(dir.to_str().unwrap(), "pulse/native");
-        assert!(
-            !args.is_empty(),
-            "Expected non-empty args when PulseAudio socket is valid"
-        );
-        assert!(
-            args.contains(&"PULSE_SERVER".to_string()),
-            "Expected PULSE_SERVER in args"
-        );
-
-        drop(_listener);
-        let _ = std::fs::remove_file(&sock_path);
-        let _ = std::fs::remove_dir(&pulse_dir);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

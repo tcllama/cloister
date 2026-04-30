@@ -40,8 +40,6 @@
 let
   bubblewrapPackage = if anonymize then bubblewrap-subset-pid else pkgs.bubblewrap;
 
-  pulseaudioSocketName = if sCfg.audio.pulseaudio.enable then "pulse/native" else null;
-
   storeRootFromEntry =
     entry:
     let
@@ -241,107 +239,6 @@ let
     else
       null;
 
-  pipewirePulseWrapperText = ''
-    set -eu
-
-    interactive=0
-    if [ "''${1-}" = "--interactive" ]; then
-      interactive=1
-      shift
-    fi
-
-    if [ "''${1-}" != "--" ]; then
-      echo "cloister pipewire wrapper: expected -- before target command" >&2
-      exit 64
-    fi
-    shift
-
-    if [ "$#" -eq 0 ]; then
-      echo "cloister pipewire wrapper: missing target command" >&2
-      exit 64
-    fi
-
-    pulse_socket="$XDG_RUNTIME_DIR/pulse/native"
-    pulse_pid=""
-    child_pid=""
-
-    cleanup_pulse() {
-      if [ -n "$pulse_pid" ]; then
-        kill "$pulse_pid" 2>/dev/null || true
-        i=0
-        while kill -0 "$pulse_pid" 2>/dev/null && [ "$i" -lt 20 ]; do
-          ${pkgs.coreutils}/bin/sleep 0.1
-          i=$((i + 1))
-        done
-        kill -KILL "$pulse_pid" 2>/dev/null || true
-        wait "$pulse_pid" 2>/dev/null || true
-        pulse_pid=""
-      fi
-      ${pkgs.coreutils}/bin/rm -f "$pulse_socket"
-    }
-
-    forward_and_exit() {
-      signal="$1"
-      code="$2"
-      if [ -n "$child_pid" ]; then
-        kill "-$signal" -- "-$child_pid" 2>/dev/null || kill "$child_pid" 2>/dev/null || true
-      fi
-      cleanup_pulse
-      exit "$code"
-    }
-
-    trap "forward_and_exit TERM \$((128 + 15))" TERM
-    trap "forward_and_exit HUP \$((128 + 1))" HUP
-
-    if [ "$interactive" -eq 1 ]; then
-      trap "" INT
-    else
-      trap "forward_and_exit INT \$((128 + 2))" INT
-    fi
-
-    if [ ! -S "$pulse_socket" ]; then
-      ${pkgs.coreutils}/bin/mkdir -p "$XDG_RUNTIME_DIR/pulse"
-      ${pkgs.pipewire}/bin/pipewire-pulse &
-      pulse_pid=$!
-      i=0
-      while [ ! -S "$pulse_socket" ] && [ "$i" -lt 20 ]; do
-        if ! kill -0 "$pulse_pid" 2>/dev/null; then
-          echo "cloister pipewire wrapper: pipewire-pulse exited before creating $pulse_socket" >&2
-          wait "$pulse_pid" 2>/dev/null || true
-          exit 1
-        fi
-        ${pkgs.coreutils}/bin/sleep 0.1
-        i=$((i + 1))
-      done
-      if [ ! -S "$pulse_socket" ]; then
-        echo "cloister pipewire wrapper: timed out waiting for $pulse_socket" >&2
-        cleanup_pulse
-        exit 1
-      fi
-    fi
-
-    export PULSE_SERVER="unix:$pulse_socket"
-
-    # Run the target in its own session so traps can signal the full process tree.
-    ${pkgs.util-linux}/bin/setsid "$@" &
-    child_pid=$!
-    if wait "$child_pid"; then
-      status=0
-    else
-      status=$?
-    fi
-    child_pid=""
-
-    cleanup_pulse
-    exit "$status"
-  '';
-
-  pipewirePulseWrapperPath =
-    if sCfg.audio.pipewire.pulseCompat.enable then
-      pkgs.writeShellScript "cloister-pipewire-pulse-wrapper-${name}" pipewirePulseWrapperText
-    else
-      null;
-
   workerBrokerLauncherTexts = lib.mapAttrs (
     launcherName: launcher:
     let
@@ -412,7 +309,6 @@ let
       ++ lib.optionals gpuEnabled hostGpuStoreInputs
       ++ lib.optional sCfg.audio.pipewire.pulseOnly pkgs.pipewire
       ++ lib.optional (pipewirePulseOnlyConf != null) pipewirePulseOnlyConf
-      ++ lib.optional (pipewirePulseWrapperPath != null) pipewirePulseWrapperPath
       ++ map storeRootFromEntry symlinkTargets
       ++ map storeRootFromEntry bindSources
       ++ lib.concatMap storeRootsFromValue (builtins.attrValues envAttrs)
@@ -439,14 +335,12 @@ let
       gpu_enable = gpuEnabled;
       gpu_shm = sCfg.gui.gpu.shm;
       ssh_enable = sCfg.ssh.enable;
-      pulseaudio_socket_name = pulseaudioSocketName;
       pipewire_backend_socket_name = pipewireBackendSocketName;
       pipewire_socket_name = pipewireSocketName;
       pipewire_pulse_binary_path =
         if sCfg.audio.pipewire.pulseOnly then "${pkgs.pipewire}/bin/pipewire-pulse" else null;
       pipewire_pulse_config_path =
         if sCfg.audio.pipewire.pulseOnly then "${pipewirePulseOnlyConf}" else null;
-      pipewire_pulse_wrapper_path = pipewirePulseWrapperPath;
       fido2_enable = sCfg.fido2.enable;
       video_enable = sCfg.video.enable;
       printing_enable = sCfg.printing.enable;
@@ -538,7 +432,6 @@ in
   internal = {
     inherit configJsonPath;
     inherit pipewirePulseOnlyConfText;
-    inherit pipewirePulseWrapperText;
     inherit workerBrokerLauncherPackage;
     workerBrokerLauncherTexts = workerBrokerRenderedLauncherTexts;
   };
