@@ -116,16 +116,7 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub disallowed_paths: Vec<String>,
     #[serde(default)]
-    pub dangerous_paths: Vec<String>,
-    #[serde(default)]
-    pub allow_dangerous_paths: Vec<String>,
-    #[serde(default = "default_true")]
-    pub dangerous_path_warnings: bool,
-    #[serde(default)]
     pub dev_binds: Vec<String>,
-    /// All host-side bind/copy sources for runtime safety validation.
-    #[serde(default)]
-    pub bind_sources: Vec<String>,
 
     /// File operations
     #[serde(default)]

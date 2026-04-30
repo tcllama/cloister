@@ -1,7 +1,6 @@
 //! Sandbox directory validation: strict home policy, disallowed paths.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Enforce the strict home directory policy (Policy A).
 ///
@@ -101,96 +100,9 @@ pub fn validate_sandbox_dir_exists(sandbox_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn paths_overlap(left: &str, right: &str) -> bool {
-    left == right
-        || left.starts_with(&format!("{right}/"))
-        || right.starts_with(&format!("{left}/"))
-}
-
-fn normalize_entry(entry: &str) -> String {
-    if entry == "/" {
-        return "/".to_string();
-    }
-    entry.trim_end_matches('/').to_string()
-}
-
-fn matches_entry(canon: &Path, home: &Path, entry: &str) -> bool {
-    if entry.is_empty() {
-        return false;
-    }
-    if entry.starts_with('/') {
-        let canon_str = canon.to_string_lossy();
-        return paths_overlap(&canon_str, entry);
-    }
-    if let Ok(rel) = canon.strip_prefix(home) {
-        let rel_str = rel.to_string_lossy();
-        let rel_str = rel_str.trim_start_matches('/');
-        return paths_overlap(rel_str, entry);
-    }
-    false
-}
-
-/// Validate bind and copy sources against dangerous paths, resolving symlinks at runtime.
-pub fn validate_dangerous_binds(
-    bind_sources: &[String],
-    runtime_vars: &HashMap<String, String>,
-    home_dir: &str,
-    dangerous_paths: &[String],
-    allow_dangerous_paths: &[String],
-) -> Result<(), String> {
-    if bind_sources.is_empty() || dangerous_paths.is_empty() {
-        return Ok(());
-    }
-
-    let home = std::fs::canonicalize(home_dir).unwrap_or_else(|_| PathBuf::from(home_dir));
-    let dangerous: Vec<String> = dangerous_paths.iter().map(|p| normalize_entry(p)).collect();
-    let allowed: Vec<String> = allow_dangerous_paths
-        .iter()
-        .map(|p| normalize_entry(p))
-        .collect();
-
-    let mut matches: Vec<String> = Vec::new();
-
-    for src in bind_sources {
-        let resolved = crate::vars::expand_vars(src, runtime_vars);
-        let path = Path::new(&resolved);
-        if !path.exists() {
-            continue;
-        }
-
-        let canon = match std::fs::canonicalize(path) {
-            Ok(p) => p,
-            Err(e) => return Err(format!("cannot resolve bind source '{resolved}': {e}")),
-        };
-
-        if allowed.iter().any(|a| matches_entry(&canon, &home, a)) {
-            continue;
-        }
-
-        if dangerous.iter().any(|d| matches_entry(&canon, &home, d)) {
-            matches.push(format!("{} (resolved from {})", canon.display(), resolved));
-        }
-    }
-
-    if matches.is_empty() {
-        return Ok(());
-    }
-
-    Err(format!(
-        "bind/copy sources resolve to dangerous paths:\n{}",
-        matches
-            .into_iter()
-            .map(|m| format!("  - {m}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
     #[test]
     fn strict_home_rejects_home_dir() {
         let result = validate_strict_home_policy("/home/user", "/home/user");
@@ -304,42 +216,6 @@ mod tests {
         assert!(
             result.is_err(),
             "symlink disallowed path should match its canonical target"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn dangerous_sources_reject_symlinked_copy_source() {
-        let tmp = std::env::temp_dir().join(format!(
-            "cloister-dangerous-source-test-{}",
-            std::process::id()
-        ));
-        let home = tmp.join("home").join("user");
-        let ssh_dir = home.join(".ssh");
-        let safe_dir = home.join("safe");
-        let src_link = safe_dir.join("config-link");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&ssh_dir).unwrap();
-        std::fs::create_dir_all(&safe_dir).unwrap();
-        std::fs::write(ssh_dir.join("config"), "Host example\n").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(ssh_dir.join("config"), &src_link).unwrap();
-
-        let err = validate_dangerous_binds(
-            &[src_link.to_string_lossy().into_owned()],
-            &HashMap::new(),
-            &home.to_string_lossy(),
-            &[".ssh".to_string()],
-            &[],
-        )
-        .unwrap_err();
-
-        assert!(err.contains("dangerous paths"), "unexpected error: {err}");
-        assert!(
-            err.contains("resolved from"),
-            "expected resolved path detail, got: {err}"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

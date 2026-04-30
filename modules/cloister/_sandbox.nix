@@ -12,7 +12,6 @@ let
   cfg = config.cloister;
   bwrapLib = import ./_bwrap.nix { inherit lib; };
   shells = import ./_mkShells.nix { inherit pkgs lib; };
-  dangerous = import ./_dangerous.nix { inherit lib; };
   resolve = import ./_resolve.nix {
     inherit lib config;
     inherit (config.xdg) configHome;
@@ -23,13 +22,25 @@ let
   bubblewrap-subset-pid = pkgs.callPackage ../../pkgs/bubblewrap-subset-pid { };
 
   inherit (config.xdg) configHome;
-  inherit (dangerous)
-    normalizeDangerousPath
-    normalizedDangerousPaths
-    pathsOverlap
-    isDangerousPath
-    ;
   inherit (resolve) resolveConfigEntry resolveConfigEntryIfPresent resolveExplicitManagedBind;
+
+  normalizePath =
+    path:
+    let
+      isAbsolute = lib.hasPrefix "/" path;
+      parts = lib.splitString "/" path;
+      normalizedParts = builtins.foldl' (
+        acc: part:
+        if part == "" || part == "." then
+          acc
+        else if part == ".." then
+          if acc == [ ] then [ ] else lib.init acc
+        else
+          acc ++ [ part ]
+      ) [ ] parts;
+      joined = lib.concatStringsSep "/" normalizedParts;
+    in
+    if isAbsolute then (if normalizedParts == [ ] then "/" else "/${joined}") else joined;
 
   # --- D-Bus proxy wrapper rendering ---
 
@@ -307,10 +318,6 @@ let
       perDirBuckets = lib.filterAttrs (_: paths: paths != [ ]) sCfg.sandbox.extraBinds.perDir;
       perDirPaths = lib.concatLists (lib.attrValues perDirBuckets);
       workerBrokerAvailableDelegatedMounts = builtins.attrValues sCfg.workerBroker.availableDelegatedPerDirMounts;
-      workerBrokerEffectiveDelegatedMountPaths = map (
-        mount:
-        normalizeDangerousPath (mount.path + lib.optionalString (mount.subPath != null) "/${mount.subPath}")
-      ) workerBrokerAvailableDelegatedMounts;
 
       dirBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.dir;
       fileBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.file;
@@ -333,7 +340,7 @@ let
       normalizeCopyDest =
         path:
         let
-          normalized = normalizeDangerousPath path;
+          normalized = normalizePath path;
           homeDir = config.home.homeDirectory;
         in
         if lib.hasPrefix "$HOME/" normalized then
@@ -701,70 +708,6 @@ let
         p: lib.hasInfix "$" p || lib.hasInfix "\n" p || lib.hasInfix "\r" p
       ) userPaths;
 
-      # --- Dangerous path detection ---
-      toDangerousPath =
-        path:
-        let
-          homeDir = config.home.homeDirectory;
-          normalized = normalizeDangerousPath path;
-          genericHomeMatch = builtins.match "^/(home|var/home)/[^/]+/(.+)$" normalized;
-          rootHomeMatch = builtins.match "^/root/(.+)$" normalized;
-        in
-        if normalized == "" || normalized == "$HOME" || normalized == homeDir then
-          ""
-        else if lib.hasPrefix "$HOME/" normalized then
-          lib.removePrefix "$HOME/" normalized
-        else if lib.hasPrefix "${homeDir}/" normalized then
-          lib.removePrefix "${homeDir}/" normalized
-        else if genericHomeMatch != null then
-          builtins.elemAt genericHomeMatch 1
-        else if rootHomeMatch != null then
-          builtins.elemAt rootHomeMatch 0
-        else
-          normalized;
-
-      rawBindPaths = lib.concatMap (
-        bind:
-        map toDangerousPath (
-          lib.filter (p: p != null) [
-            bind.src
-            bind.dest
-          ]
-        )
-      ) (sCfg.sandbox.binds.ro ++ sCfg.sandbox.binds.rw);
-
-      managedFileBindPaths = map (bind: toDangerousPath bind.dest) managedFileBinds;
-
-      allDangerousBindPaths =
-        sCfg.sandbox.extraBinds.required.ro
-        ++ sCfg.sandbox.extraBinds.required.rw
-        ++ sCfg.sandbox.extraBinds.optional.ro
-        ++ sCfg.sandbox.extraBinds.optional.rw
-        ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.dir)
-        ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.file)
-        ++ perDirPaths
-        ++ managedFileBindPaths
-        ++ rawBindPaths
-        ++ map (cf: toDangerousPath cf.src) sCfg.sandbox.copyFiles
-        ++ map toDangerousPath workerBrokerEffectiveDelegatedMountPaths;
-
-      normalizedAllowDangerousPaths = builtins.filter (p: p != "") (
-        map normalizeDangerousPath sCfg.sandbox.allowDangerousPaths
-      );
-
-      matchedDangerousPaths = lib.unique (
-        builtins.filter (
-          path:
-          let
-            normalizedPath = normalizeDangerousPath path;
-            isAllowedPath = builtins.any (
-              allowed: pathsOverlap normalizedPath allowed
-            ) normalizedAllowDangerousPaths;
-          in
-          normalizedPath != "" && isDangerousPath normalizedPath && !isAllowedPath
-        ) allDangerousBindPaths
-      );
-
       # --- Computed env var override detection ---
       computedEnvKeys = lib.unique (
         [
@@ -803,7 +746,6 @@ let
           duplicateLinks
           duplicateManagedFiles
           unsafePaths
-          matchedDangerousPaths
           overriddenEnvKeys
           overriddenDbusKeys
           overriddenGuiKeys
@@ -903,17 +845,9 @@ let
         # read-only file mounts overlay on top of the writable directory.
         ++ map (mkDynamicBind "ro") managedFileBindsOverlapping;
 
-      # Feature-generated bind sources are excluded from dangerous path
-      # validation: they are intentional binds added by the module, not
-      # user-provided paths. This prevents e.g. git.enable's explicit config
-      # file binds from being treated as user-provided paths while
-      # still catching user-supplied extraBinds that touch the same tree.
-      featureBindSrcs = map (b: b.src) (gitBinds ++ dbusBinds ++ guiBinds);
-      bindSources = lib.unique (
-        builtins.filter (s: !builtins.elem s featureBindSrcs) (
-          map (b: b.src) (staticRoBinds ++ staticRwBinds ++ dynamicBindsList)
-          ++ map (cf: cf.src) sCfg.sandbox.copyFiles
-        )
+      storeRootSources = lib.unique (
+        map (b: b.src) (staticRoBinds ++ staticRwBinds ++ dynamicBindsList)
+        ++ map (cf: cf.src) sCfg.sandbox.copyFiles
       );
 
       # File operation specs for the compiled binary
@@ -964,13 +898,11 @@ let
           staticRoBinds
           staticRwBinds
           dynamicBindsList
-          bindSources
+          storeRootSources
           perDirBuckets
           dirMkdirSpecs
           fileMkdirSpecs
           copyFileSpecs
-          normalizedDangerousPaths
-          normalizedAllowDangerousPaths
           dbusProxyWrapper
           flatpakAppId
           pipewireSocketName

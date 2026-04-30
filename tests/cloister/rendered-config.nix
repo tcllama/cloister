@@ -31,12 +31,12 @@ let
     };
   };
 
-  hostConfigOffEval = hm {
+  hostConfigOnEval = hm {
     cloister = {
       enable = true;
       sandboxes.dev.shell = {
         name = "zsh";
-        hostConfig = false;
+        hostConfig = true;
       };
     };
   };
@@ -254,7 +254,7 @@ let
 
   sandboxConfig = eval.config.cloister._internal.sandboxConfigs.dev;
   plainConfig = plainEval.config.cloister._internal.sandboxConfigs.plain;
-  hostConfigOff = hostConfigOffEval.config.cloister._internal.sandboxConfigs.dev;
+  hostConfigOn = hostConfigOnEval.config.cloister._internal.sandboxConfigs.dev;
   localeOverride = localeOverrideEval.config.cloister._internal.sandboxConfigs.dev;
   workdirDisabled = workdirDisabledEval.config.cloister._internal.sandboxConfigs.dev;
   featuresConfig = featuresEval.config.cloister._internal.sandboxConfigs.dev;
@@ -286,7 +286,7 @@ let
 
   plainStaticArgs = builtins.toJSON plainConfig.static_bwrap_args;
   plainDynamicBinds = builtins.toJSON plainConfig.dynamic_binds;
-  hostConfigOffStaticArgs = builtins.toJSON hostConfigOff.static_bwrap_args;
+  hostConfigOnDynamicBinds = builtins.toJSON hostConfigOn.dynamic_binds;
   sandboxConfigJson = builtins.toJSON sandboxConfig;
   localeOverrideStaticArgs = builtins.toJSON localeOverride.static_bwrap_args;
 in
@@ -335,12 +335,14 @@ checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectContains "dynamic bind keeps HOME reference" "$HOME/.gitconfig" (
     builtins.toJSON sandboxConfig.dynamic_binds
   ))
-  (checks.expectFalse "host config can be disabled" hostConfigOff.shell_host_config)
-  (checks.expectContains "disabled host config sets ZDOTDIR" ''"ZDOTDIR"'' hostConfigOffStaticArgs)
-  (checks.expectNotContains "disabled host config omits host zshrc" ''"$HOME/.zshrc"''
-    hostConfigOffStaticArgs
+  (checks.expectFalse "host config defaults disabled" plainConfig.shell_host_config)
+  (checks.expectNotContains "default host config omits host zshrc" ''"$HOME/.zshrc"''
+    plainDynamicBinds
   )
-  (checks.expectContains "default host config keeps shell binds" ''"$HOME/.zshrc"'' plainDynamicBinds)
+  (checks.expectTrue "host config can be enabled" hostConfigOn.shell_host_config)
+  (checks.expectContains "enabled host config keeps shell binds" ''"$HOME/.zshrc"''
+    hostConfigOnDynamicBinds
+  )
   (checks.expectEq "working directory binding can be disabled" false
     workdirDisabled.bind_working_directory
   )

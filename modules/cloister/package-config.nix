@@ -22,13 +22,11 @@
   staticRoBinds,
   staticRwBinds,
   dynamicBindsList,
-  bindSources,
+  storeRootSources,
   perDirBuckets,
   dirMkdirSpecs,
   fileMkdirSpecs,
   copyFileSpecs,
-  normalizedDangerousPaths,
-  normalizedAllowDangerousPaths,
   dbusProxyWrapper,
   flatpakAppId,
   pipewireSocketName,
@@ -43,12 +41,13 @@ let
   storeRootFromEntry =
     entry:
     let
-      match = builtins.match "^(/nix/store/[^/:]+)(/.*)?$" entry;
+      entryString = toString entry;
+      match = builtins.match "^(/nix/store/[^/:]+)(/.*)?$" entryString;
     in
     if match == null then
       null
     else
-      builtins.appendContext (builtins.elemAt match 0) (builtins.getContext entry);
+      builtins.appendContext (builtins.elemAt match 0) (builtins.getContext entryString);
 
   storeRootsFromValue =
     value: builtins.filter (p: p != null) (map storeRootFromEntry (lib.splitString ":" value));
@@ -316,7 +315,7 @@ let
       ++ lib.optional sCfg.audio.pipewire.pulseOnly pkgs.pipewire
       ++ lib.optional (pipewirePulseOnlyConf != null) pipewirePulseOnlyConf
       ++ map storeRootFromEntry symlinkTargets
-      ++ map storeRootFromEntry bindSources
+      ++ map storeRootFromEntry storeRootSources
       ++ lib.concatMap storeRootsFromValue (builtins.attrValues envAttrs)
     )
   );
@@ -393,11 +392,7 @@ let
 
       passthrough_env = sCfg.sandbox.passthroughEnv;
       disallowed_paths = sCfg.sandbox.disallowedPaths;
-      dangerous_paths = normalizedDangerousPaths;
-      allow_dangerous_paths = normalizedAllowDangerousPaths;
-      dangerous_path_warnings = sCfg.sandbox.dangerousPathWarnings;
       dev_binds = sCfg.sandbox.devBinds;
-      bind_sources = bindSources;
 
       dir_mkdirs = dirMkdirSpecs;
       file_mkdirs = fileMkdirSpecs;

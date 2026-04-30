@@ -52,34 +52,16 @@ When `gui.wayland.securityContext.enable` is set, the sandbox connects through `
 
 When `dbus.enable` is set, a per-launch `xdg-dbus-proxy` instance filters session bus access. Policies control which bus names the sandbox can `talk` to, `own`, `see`, `call`, or receive `broadcast` signals from. Portal toggles are layered on top of this proxy and are not available when D-Bus is disabled.
 
-### Dangerous Path Detection
-
-The `dangerousPaths` mechanism prevents accidental exposure of credential files. At Nix evaluation time, all bind mount paths are checked against a list of known sensitive locations. This list is not comprehensive and is designed to be a feedback mechanism and will not prevent leaking of sensitive data due to misconfiguration.
-
-If a bind mount path overlaps any of these, the build fails with an assertion error listing the offending paths.
-
-**Suppressing warnings for specific paths:**
-
-```nix
-cloister.sandboxes.<name>.sandbox.allowDangerousPaths = [ ".ssh" ];
-```
-
-**Disabling all checks:**
-
-```nix
-cloister.sandboxes.<name>.sandbox.dangerousPathWarnings = false;
-```
-
 ## Accepted Risks
 
 Each of these is a deliberate trade-off between security and developer experience:
 
 | Risk | Rationale |
 |------|-----------|
-| **Shell init files (`.zshrc`/`.bashrc`) bound read-only by default** | May contain exported secrets (e.g., `export API_KEY=...`). Necessary for dev UX - shell configuration, aliases, prompt, and tool initialization. Disable with `shell.hostConfig = false`. |
+| **Shell init files (`.zshrc`/`.bashrc`) can be bound read-only** | May contain exported secrets (e.g., `export API_KEY=...`). Host shell config is off by default; enable it only for trusted sandboxes with `shell.hostConfig = true`. |
 | **Network enabled by default** | Needed for package managers, LSPs, git fetch, and API access. Disable with `network.enable = false`. |
 | **`nix`, `curl`, `openssh` in default packages** | Core dev toolchain. SSH access is mediated by the fingerprint filter when configured. |
-| **Git config bound read-only** | May expose credential helper configuration (e.g., `credential.helper = store`). Cloister binds only `.gitconfig` and `.config/git/config`; actual credential files (`.git-credentials`, `.config/git/credentials`) are not mounted and are still blocked by dangerous path detection. |
+| **Git config bound read-only** | May expose credential helper configuration (e.g., `credential.helper = store`). Cloister binds only `.gitconfig` and `.config/git/config`; actual credential files (`.git-credentials`, `.config/git/credentials`) are not mounted by this feature. |
 | **GPU sysfs paths exposed read-only** | When GPU is enabled, GPU-specific `/sys/dev/char/MAJ:MIN` entries, `/run/opengl-driver`, and auto-detected PCI sysfs device paths are ro-bound. This reveals GPU hardware identifiers (vendor/device IDs) and driver metadata. Required for Mesa/Vulkan to identify and initialize the GPU. All binds use `--ro-bind` (not `--dev-bind`) and are gated on path existence. |
 | **Video device access exposes all V4L2 devices** | When `video.enable` is set, all `/dev/video*` devices are bound into the sandbox. V4L2 has no per-client restriction mechanism - any process with device access can capture video from any connected camera. The sysfs paths exposed also reveal USB/PCI device identifiers. |
 | **CUPS socket grants full print access** | When `printing.enable` is set, the CUPS socket is bound read-only. Any process inside the sandbox can submit print jobs and query printer information. The socket is read-only so the sandbox cannot modify CUPS configuration. |

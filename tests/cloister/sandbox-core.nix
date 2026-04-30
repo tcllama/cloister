@@ -217,13 +217,6 @@ let
     };
   };
 
-  dangerousBind = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.extraBinds.required.ro = [ ".ssh" ];
-    };
-  };
-
   dirTmpfsOverlapEval = hm {
     cloister = {
       enable = true;
@@ -234,108 +227,10 @@ let
     };
   };
 
-  dangerousAncestor = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.extraBinds.required.ro = [ ".config" ];
-    };
-  };
-
-  dangerousNormalized = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.extraBinds.required.ro = [ ".ssh/../.ssh" ];
-    };
-  };
-
-  dangerousChild = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.extraBinds.required.ro = [ ".ssh/id_ed25519" ];
-    };
-  };
-
-  dangerousRawBind = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.binds.ro = [
-        {
-          src = "/home/tester/.aws";
-          dest = "/mnt/aws";
-          try = false;
-        }
-      ];
-    };
-  };
-
-  dangerousAllowed = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox = {
-        extraBinds.required.ro = [ ".ssh" ];
-        allowDangerousPaths = [ ".ssh" ];
-      };
-    };
-  };
-
-  dangerousCopyFile = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.copyFiles = [
-        {
-          src = "/home/tester/.ssh/config";
-          dest = "/home/tester/.config/app.conf";
-        }
-      ];
-    };
-  };
-
-  dangerousNormalizedCopyFile = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.copyFiles = [
-        {
-          src = "/home/tester/.ssh/../.ssh/config";
-          dest = "/home/tester/.config/app.conf";
-        }
-      ];
-    };
-  };
-
-  dangerousWarningsDisabled = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox = {
-        extraBinds.required.ro = [ ".config/git/credentials" ];
-        dangerousPathWarnings = false;
-      };
-    };
-  };
-
   gitEval = hm {
     cloister = {
       enable = true;
       sandboxes.dev.git.enable = true;
-    };
-  };
-
-  gitDangerous = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        git.enable = true;
-        sandbox.extraBinds.required.ro = [ ".config/git/credentials" ];
-      };
-    };
-  };
-
-  sshDangerous = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        ssh.enable = true;
-        sandbox.extraBinds.required.ro = [ ".ssh" ];
-      };
     };
   };
 
@@ -462,10 +357,6 @@ let
   strictHomePolicyConfig = strictHomePolicyEval.config.cloister._internal.sandboxConfigs.dev;
   emptyPerDirBucketConfig = emptyPerDirBucketEval.config.cloister._internal.sandboxConfigs.dev;
   gitConfig = gitEval.config.cloister._internal.sandboxConfigs.dev;
-  dangerousAllowedFailures = builtins.filter (a: !a.assertion) dangerousAllowed.assertions;
-  dangerousWarningsDisabledFailures = builtins.filter (
-    a: !a.assertion
-  ) dangerousWarningsDisabled.assertions;
   emptyPerDirBucketFailures = builtins.filter (a: !a.assertion) emptyPerDirBucketEval.assertions;
 
   getBind = src: builtins.head (builtins.filter (bind: bind.src == src) bindMatrix);
@@ -560,9 +451,6 @@ checks.mkCheck "test-cloister-sandbox-core" [
     (builtins.unsafeDiscardStringContext (toString managedXdgSource))
     explicitManagedFileBindStateJson
   )
-  (checks.expectContains "dangerous path list includes ssh" ".ssh" (
-    builtins.toJSON sandboxConfig.dangerous_paths
-  ))
   (checks.expectEq "multi per-dir mapping is rendered" {
     "/var/lib/cloister-per-dir" = [ ".cache/custom" ];
     "/var/lib/cloister-worktrees" = [ ".local/worktrees/project" ];
@@ -614,9 +502,6 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectAssertionMessage "copyFiles mode validation fails" invalidCopyMode.assertions
     "copyFiles contains invalid mode values"
   )
-  (checks.expectAssertionMessage "dangerous bind validation fails" dangerousBind.assertions
-    "contains paths that expose credentials or secrets"
-  )
   (checks.expectAssertionMessage "dir and tmpfs overlap is rejected" dirTmpfsOverlapEval.assertions
     "paths appear in both sandbox dirs and tmpfs"
   )
@@ -645,29 +530,6 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectAssertionMessage "unsafe path expansion is rejected" unsafePath.assertions
     "cannot contain variable expansions ($) or newlines"
   )
-  (checks.expectAssertionMessage "dangerous ancestor paths are rejected" dangerousAncestor.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "normalized dangerous paths are rejected"
-    dangerousNormalized.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "dangerous child paths are rejected" dangerousChild.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "dangerous raw binds are rejected" dangerousRawBind.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "dangerous copyFiles sources are rejected"
-    dangerousCopyFile.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "normalized dangerous copyFiles sources are rejected"
-    dangerousNormalizedCopyFile.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectEq "dangerous path allowlist suppresses failure" [ ] dangerousAllowedFailures)
-  (checks.expectEq "dangerous path warnings can be disabled" [ ] dangerousWarningsDisabledFailures)
   (checks.expectAssertionMessage "invalid passthrough env names are rejected"
     blockedPassthrough.assertions
     "contains invalid variable names"
@@ -675,12 +537,6 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectAssertionMessage "managed passthrough env keys are blocked"
     blockedPassthrough.assertions
     "cannot include computed/managed keys"
-  )
-  (checks.expectAssertionMessage "git enable still protects credential paths" gitDangerous.assertions
-    "contains paths that expose credentials or secrets"
-  )
-  (checks.expectAssertionMessage "ssh enable still protects ssh paths" sshDangerous.assertions
-    "contains paths that expose credentials or secrets"
   )
   (checks.expectFailure "missing managedFile entries fail evaluation" missingManagedFile.config.cloister._internal.sandboxConfigs.dev.static_bwrap_args)
 ]

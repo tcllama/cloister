@@ -162,9 +162,9 @@ cloister = {
 };
 ```
 
-An empty sandbox declaration (`sandboxes.dev = { };`) is convenience-first: it keeps
-`shell.hostConfig = true` and `network.enable = true`. Use `preset = "hardened"`
-for low-trust tools, AI agents, and unknown scripts.
+An empty sandbox declaration (`sandboxes.dev = { };`) keeps host shell config off
+by default while leaving `network.enable = true`. Use `preset = "hardened"` for
+low-trust tools, AI agents, and unknown scripts.
 
 Each sandbox defined under `cloister.sandboxes.<name>` produces a `cl-<name>` binary.
 
@@ -182,7 +182,7 @@ You can use host shell config or provide sandbox-specific rc files (sourced befo
 ```nix
 cloister.sandboxes.dev.shell = {
   name = "zsh";
-  hostConfig = true; # default
+  hostConfig = true; # opt in to host shell startup files
   customRcPath.zshrc = ./configs/zsh/dev.zshrc;
 };
 ```
@@ -223,7 +223,6 @@ CLOISTER_DIR=/path/to/project cl-dev
 - **PipeWire / PulseAudio** - audio with optional per-sandbox device filtering via WirePlumber
 - **D-Bus notifications** - per-sandbox filtered proxy with configurable policies
 - **SSH agent** - forward `SSH_AUTH_SOCK` into the sandbox (optional fingerprint filtering + timeout)
-- **Dangerous path detection** - build-time checks prevent accidentally binding credential locations
 - **Validator helpers** - install Wayland/D-Bus/seccomp validators and wrap them outside the sandbox
 
 ## Presets

@@ -2008,19 +2008,6 @@ fn run() -> i32 {
         None
     };
 
-    if config.dangerous_path_warnings {
-        if let Err(e) = validate::validate_dangerous_binds(
-            &config.bind_sources,
-            &runtime_vars,
-            &configured_home_resolved,
-            &config.dangerous_paths,
-            &config.allow_dangerous_paths,
-        ) {
-            eprintln!("{prefix}: {e}");
-            process::exit(1);
-        }
-    }
-
     let image_store_mount_path = if config.store_mode == StoreMode::ImageStore {
         match ensure_image_store_mounted(&config, &prefix) {
             Ok(path) => Some(path),

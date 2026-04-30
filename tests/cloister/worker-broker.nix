@@ -63,24 +63,6 @@ let
     };
   };
 
-  dangerousDelegatedMountPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees.path = "/home/tester/.ssh";
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
-
   unsafeDelegatedMountPath = hm {
     cloister = {
       enable = true;
@@ -147,27 +129,6 @@ let
             delegatedPerDirMounts.worktrees = "rw";
           };
           availableDelegatedPerDirMounts.worktrees.path = "/home/tester/projects/worktrees";
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
-
-  dangerousDelegatedMountSubPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees = {
-            path = "/home/tester";
-            subPath = ".ssh";
-          };
         };
       };
       sandboxes.worker = { };
@@ -398,10 +359,6 @@ checks.mkCheck "test-cloister-worker-broker" [
     workerBrokerWithoutBindWorkingDirectory.assertions
     "workerBroker.enable requires sandbox.bindWorkingDirectory = true"
   )
-  (checks.expectAssertionMessage "worker broker delegated mount paths reuse dangerous path checks"
-    dangerousDelegatedMountPath.assertions
-    "contains paths that expose credentials or secrets"
-  )
   (checks.expectAssertionMessage "worker broker delegated mount paths reject unsafe expansions"
     unsafeDelegatedMountPath.assertions
     "cannot contain variable expansions ($) or newlines"
@@ -417,10 +374,6 @@ checks.mkCheck "test-cloister-worker-broker" [
   (checks.expectFalse "worker broker delegated mount paths allow valid absolute home paths" (
     builtins.any (assertion: !assertion.assertion) validAbsoluteHomeDelegatedMountPath.assertions
   ))
-  (checks.expectAssertionMessage "worker broker delegated mount subpaths reuse dangerous path checks"
-    dangerousDelegatedMountSubPath.assertions
-    "contains paths that expose credentials or secrets"
-  )
   (checks.expectAssertionMessage
     "worker broker delegated mount subpaths must stay relative descendants"
     traversingDelegatedMountSubPath.assertions

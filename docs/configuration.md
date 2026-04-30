@@ -109,11 +109,11 @@ cloister.sandboxes.dev.shell.name = "zsh";  # default is cloister.defaultShell (
 
 This controls the interactive shell inside the sandbox and the wrapper integration outside.
 
-To bind host shell config files and/or add sandbox-specific ones:
+Host shell config files are not bound by default. To bind them and/or add sandbox-specific rc files:
 
 ```nix
 cloister.sandboxes.dev.shell = {
-  hostConfig = true; # default
+  hostConfig = true; # opt in to host shell startup files
   customRcPath = {
     zshenv = ./configs/zsh/dev.zshenv;
     zshrc = ./configs/zsh/dev.zshrc;
@@ -133,14 +133,13 @@ Custom rc files are bound into `~/.config/cl-shell/<name>/custom/` and sourced i
 Notes:
 
 - `customRcPath` entries are Nix paths (e.g. `./configs/zsh/dev.zshrc`), so they land in the Nix store and are bind-mounted read-only into the sandbox.
-- Set `hostConfig = false` to avoid binding any host shell config files.
+- Leave `hostConfig = false` (the default) to avoid binding any host shell config files.
 
 Example: two sandboxes, two different zshrc subsets
 
 See `examples/shell-custom-rc.nix` and the companion files under `examples/configs/zsh/`.
 
-> **Note:** Shell config files are bound read-only into the sandbox by default
-> for zero-config sandboxes.
+> **Note:** When enabled, shell config files are bound read-only into the sandbox.
 > Avoid storing secrets (API tokens, credentials) directly in shell config files,
 > as they will be visible inside every sandbox. Use a credential manager or
 > environment variable passthrough instead.
@@ -429,20 +428,6 @@ cloister.sandboxes.pdf.git.enable = false; # default - no git config inside this
 ```
 
 When enabled, `.gitconfig` and `.config/git/config` are bound read-only. This includes credential helper configuration. Disabled by default to avoid exposing credential helper configuration.
-
-### Dangerous path detection
-
-The module checks all bind paths at build time against a list of known credential locations (`.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker/config.json`, keyrings, etc.). If any match, the build fails with a clear error explaining the risk.
-
-> **Note:** This is a best-effort, informational check designed to prevent accidental exposure of common secrets. It is not a strict security boundary, as it relies on static analysis and cannot detect if a user binds a symlink pointing to a sensitive location.
-
-To acknowledge specific paths as intentionally bound:
-
-```nix
-cloister.sandboxes.dev.sandbox.allowDangerousPaths = [ ".config/gh/hosts.yml" ];
-```
-
-To disable all path checks: `sandbox.dangerousPathWarnings = false`.
 
 ## Desktop integration
 
@@ -795,7 +780,7 @@ See the sections above for usage examples and explanations.
 | `extraPackages` | list of package | `[]` | Additional packages appended to the internally managed base PATH |
 | `preset` | nullOr enum | `null` | Apply one of `hardened`, `developer`, `gui`, or `chromium` default profiles |
 | `shell.name` | enum | `cloister.defaultShell` | Interactive shell (`"zsh"` or `"bash"`) |
-| `shell.hostConfig` | bool | `true` | Bind host shell config files into the sandbox |
+| `shell.hostConfig` | bool | `false` | Bind host shell config files into the sandbox |
 | `shell.customRcPath.zshenv` | nullOr path | `null` | Custom zshenv file to source inside the sandbox |
 | `shell.customRcPath.zshrc` | nullOr path | `null` | Custom zshrc file to source inside the sandbox |
 | `shell.customRcPath.bashenv` | nullOr path | `null` | Custom bashenv file to source inside the sandbox |
@@ -827,8 +812,6 @@ See the sections above for usage examples and explanations.
 | `sandbox.extraBinds.perDir` | attrsOf (list of str) | `{}` | Per-directory binds keyed by host base directory |
 | `sandbox.extraBinds.managedFile` | list of str | `[]` | Home-manager managed file keys bound read-only |
 | `sandbox.extraBinds.managedFileBind` | list of {src, dest} | `[]` | Explicit read-only file binds from Nix store or fixed paths |
-| `sandbox.dangerousPathWarnings` | bool | `true` | Fail on binds to known credential locations |
-| `sandbox.allowDangerousPaths` | list of str | `[]` | Acknowledged credential paths to allow |
 | `sandbox.enforceStrictHomePolicy` | bool | `true` | Prevent sandboxing home dirs and dot-dirs |
 | `sandbox.disallowedPaths` | list of str | `["/", "/root"]` | Paths disallowed as sandbox directory |
 | `sandbox.copyFileBase` | str | `"${config.xdg.stateHome}/cloister"` | Base directory on the host where copyFiles are stored |

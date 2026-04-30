@@ -732,18 +732,6 @@ let
             };
           };
 
-          dangerousPathWarnings = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Check extraBinds paths, managedFile-resolved paths, and managedFileBind destinations against known credential-storing locations and fail if any match.";
-          };
-
-          allowDangerousPaths = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Home-relative paths (or managedFile path prefixes) acknowledged as intentionally bound despite being known credential locations.";
-          };
-
           enforceStrictHomePolicy = lib.mkOption {
             type = lib.types.bool;
             default = true;

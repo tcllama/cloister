@@ -169,7 +169,7 @@ test-changed:
 				add_check test-cloister-registry \
 				add_runtime_check test-runtime-sandbox-core \
 				;; \
-			modules/cloister/_options.nix|modules/cloister/default.nix|modules/cloister/_mkShells.nix|modules/cloister/_shells/*|modules/cloister/_resolve.nix|modules/cloister/_dangerous.nix|modules/cloister/_patterns.nix) \
+			modules/cloister/_options.nix|modules/cloister/default.nix|modules/cloister/_mkShells.nix|modules/cloister/_shells/*|modules/cloister/_resolve.nix|modules/cloister/_patterns.nix) \
 				add_check test-cloister-registry; \
 				add_check test-cloister-presets; \
 				add_check test-cloister-sandbox-core; \

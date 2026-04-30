@@ -8,7 +8,6 @@
   duplicateLinks,
   duplicateManagedFiles,
   unsafePaths,
-  matchedDangerousPaths,
   overriddenEnvKeys,
   overriddenDbusKeys,
   overriddenGuiKeys,
@@ -312,27 +311,5 @@ in
     assertion =
       !(sCfg.sandbox.anonymize.enable && sCfg.audio.pipewire.enable && !sCfg.audio.pipewire.pulseOnly);
     message = "cloister.sandboxes.${name}: it is not possible to anonymize a PipeWire socket. If sandbox.anonymize.enable = true and audio.pipewire.enable = true, you must also enable audio.pipewire.pulseOnly.";
-  }
-  {
-    assertion = !sCfg.sandbox.dangerousPathWarnings || matchedDangerousPaths == [ ];
-    message = lib.concatStringsSep "\n" (
-      [
-        "cloister.sandboxes.${name}: binds/extraBinds/managedFile contains paths that expose credentials or secrets:"
-      ]
-      ++ map (p: "  - ${p}") matchedDangerousPaths
-      ++ [
-        ""
-        "These paths contain sensitive data (SSH keys, cloud credentials, keyrings, etc.)"
-        "that the sandbox is designed to protect. Binding them in defeats the purpose."
-        ""
-        "To suppress this warning for specific paths:"
-        "  cloister.sandboxes.${name}.sandbox.allowDangerousPaths = [ ${
-            lib.concatMapStringsSep " " (p: ''"${p}"'') matchedDangerousPaths
-          } ];"
-        ""
-        "To disable all dangerous path checks:"
-        "  cloister.sandboxes.${name}.sandbox.dangerousPathWarnings = false;"
-      ]
-    );
   }
 ]
