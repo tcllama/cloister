@@ -57,7 +57,7 @@ Cloister supports two ways to expose `/nix/store` inside a sandbox.
 
 When using `image-store`:
 
-- packages from `packages` and `extraPackages` are available on `PATH` and their runtime closures are exposed automatically
+- the internally managed base packages and configured `extraPackages` are available on `PATH` and their runtime closures are exposed automatically
 - some other store paths are included when Cloister references them directly, such as shell binaries, generated config files, or symlink targets
 
 ```nix
@@ -599,13 +599,21 @@ cloister.sandboxes.chromium.gui.desktopEntry = {
 
 Generates an XDG `.desktop` file so the sandbox appears in your app launcher. Requires a GUI display protocol to be enabled and `defaultCommand` to be set. The `Exec` line launches `cl-<name>` with any `execArgs` appended, so `defaultCommand` is what makes that wrapper behave like an application launcher instead of opening an interactive shell. When `name` is empty, it falls back to `cl-<name>`.
 
-### Device passthrough
+### Device integrations
+
+Use named integration toggles for common device access:
+
+- `video.enable` for `/dev/video*` webcam/camera access
+- `fido2.enable` for FIDO2/U2F security keys
+- `printing.enable` for CUPS printing
+
+For uncommon devices, including `/dev/kvm`, pass explicit device nodes with `sandbox.devBinds`:
 
 ```nix
-cloister.sandboxes.dev.sandbox.devBinds = [ "/dev/video0" ];
+cloister.sandboxes.dev.sandbox.devBinds = [ "/dev/input/js0" ];
 ```
 
-Passes arbitrary device nodes into the sandbox with `--dev-bind`. Missing devices are warned about at runtime rather than failing. Useful for webcams, hardware tokens, or other device access.
+Device paths are mounted with `--dev-bind`. Missing devices are warned about at runtime rather than failing startup.
 
 ### Examples
 
@@ -775,6 +783,7 @@ See the sections above for usage examples and explanations.
 |--------|------|---------|---------|
 | `cloister.imageStore.base` | string | `"/var/lib/cloister/images"` | NixOS global publish directory for immutable store images |
 | `cloister.imageStore.mountBase` | string | `"/run/cloister/images"` | NixOS global mount directory for immutable store images |
+| `cloister.imageStore.compression.enable` | bool | `true` | Compress generated squashfs images with zstd level 10 and 1 MiB blocks |
 | `cloister.imageStore.enable` | bool | `false` | Enable periodic cleanup of published image-store links |
 | `cloister.imageStore.interval` | string | `"weekly"` | systemd timer schedule for image-store cleanup |
 
@@ -783,8 +792,7 @@ See the sections above for usage examples and explanations.
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
 | `defaultCommand` | nullOr (listOf str) | `null` | Default command prefix used when invoked without args, or when appending positional args |
-| `packages` | list of package | *(core set)* | Base packages on the sandbox PATH |
-| `extraPackages` | list of package | `[]` | Additional packages appended to PATH |
+| `extraPackages` | list of package | `[]` | Additional packages appended to the internally managed base PATH |
 | `preset` | nullOr enum | `null` | Apply one of `hardened`, `developer`, `gui`, or `chromium` default profiles |
 | `shell.name` | enum | `cloister.defaultShell` | Interactive shell (`"zsh"` or `"bash"`) |
 | `shell.hostConfig` | bool | `true` | Bind host shell config files into the sandbox |
@@ -851,7 +859,6 @@ See the sections above for usage examples and explanations.
 | `gui.desktopEntry.genericName` | str | `""` | Generic name (e.g. "Web Browser") |
 | `gui.desktopEntry.comment` | str | `""` | Tooltip/comment |
 | `gui.desktopEntry.startupNotify` | bool | `false` | Startup notification support |
-| `sandbox.devBinds` | list of str | `[]` | Device paths for --dev-bind passthrough |
 | `sandbox.seccomp.enable` | bool | `true` | Apply seccomp-bpf filter blocking dangerous syscalls |
 | `sandbox.seccomp.allowChromiumSandbox` | bool | `false` | Allow Chromium/Electron internal sandbox syscalls (chroot, namespaces) |
 | `ssh.enable` | bool | `false` | Forward SSH agent socket |
@@ -865,11 +872,11 @@ See the sections above for usage examples and explanations.
 | `dbus.portal.screencast` | bool | `false` | Allow the ScreenCast portal |
 | `dbus.portal.camera` | bool | `false` | Allow the Camera portal |
 | `dbus.portal.notifications` | bool | `false` | Allow native desktop notifications via `org.freedesktop.Notifications` |
-| `dbus.policies.talk` | list of str | `[]` | D-Bus TALK allowlist |
-| `dbus.policies.own` | list of str | `[]` | D-Bus OWN allowlist |
-| `dbus.policies.see` | list of str | `[]` | D-Bus SEE allowlist |
-| `dbus.policies.call` | attrsOf (list of str) | `{}` | Per-name call rules |
-| `dbus.policies.broadcast` | attrsOf (list of str) | `{}` | Per-name broadcast rules |
+| `dbus.rawPolicies.talk` | list of str | `[]` | Raw D-Bus TALK allowlist |
+| `dbus.rawPolicies.own` | list of str | `[]` | Raw D-Bus OWN allowlist |
+| `dbus.rawPolicies.see` | list of str | `[]` | Raw D-Bus SEE allowlist |
+| `dbus.rawPolicies.call` | attrsOf (list of str) | `{}` | Raw per-name call rules |
+| `dbus.rawPolicies.broadcast` | attrsOf (list of str) | `{}` | Raw per-name broadcast rules |
 | `audio.pipewire.enable` | bool | `false` | Enable filtered PipeWire-backed audio |
 | `audio.pipewire.pulseOnly` | bool | `false` | Expose only a filtered PulseAudio-compatible proxy socket while keeping PipeWire hidden from the sandbox |
 | `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (*auto-enabled by `audio.pipewire.enable`) |
@@ -882,10 +889,10 @@ See the sections above for usage examples and explanations.
 | `video.enable` | bool | `false` | Bind /dev/video* devices for webcam/camera access |
 | `printing.enable` | bool | `false` | Forward CUPS printing socket |
 | `fido2.enable` | bool | `false` | Bind /dev/hidraw\* devices for FIDO2/U2F security key access |
+| `sandbox.devBinds` | list of str | `[]` | Additional device paths for `--dev-bind` passthrough |
 | `registry.aliases` | attrsOf str | `{}` | Shell aliases |
 | `registry.functions` | attrsOf lines | `{}` | Shell functions |
 | `registry.commands` | list of str | `[]` | Commands to wrap outside sandbox |
-| `registry.extraCommands` | list of str | `[]` | Additional command names appended to wrapped commands |
 | `registry.interactiveCommands` | list of str | `[]` | Commands to wrap outside sandbox via `cl-<name> -i ...` |
 | `registry.noWrap` | list of str | `[]` | Names to exclude from wrapping |
 | `init.text` | lines | `""` | Shell snippet sourced inside the sandbox |

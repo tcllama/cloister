@@ -8,7 +8,7 @@ let
     name: sCfg:
     let
       regCfg = sCfg.registry;
-      allCommands = regCfg.commands ++ regCfg.interactiveCommands ++ regCfg.extraCommands;
+      allCommands = regCfg.commands ++ regCfg.interactiveCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
       wrappableAliasNames = lib.filter (n: !builtins.elem n regCfg.noWrap) aliasNames;
@@ -72,7 +72,7 @@ let
     _name: sCfg:
     let
       regCfg = sCfg.registry;
-      allCommands = regCfg.commands ++ regCfg.interactiveCommands ++ regCfg.extraCommands;
+      allCommands = regCfg.commands ++ regCfg.interactiveCommands;
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
 

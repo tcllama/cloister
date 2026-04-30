@@ -76,7 +76,7 @@ In practice, `dbus.portal.fileChooser = true` should be treated as desktop integ
 
 ## Policy configuration
 
-You can still add extra policy entries manually through `dbus.policies.*` when needed. Policy names must be well-formed dot-separated bus names such as `org.example.App`, with an optional trailing `.*` wildcard suffix.
+Use high-level `dbus.portal.*` toggles for common desktop integration. When an application needs raw `xdg-dbus-proxy` rules beyond the built-in portal grants, add them through `dbus.rawPolicies.*`. Policy names must be well-formed dot-separated bus names such as `org.example.App`, with an optional trailing `.*` wildcard suffix.
 
 Common base policy:
 

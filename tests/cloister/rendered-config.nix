@@ -75,7 +75,10 @@ let
         video.enable = true;
         printing.enable = true;
         git.enable = true;
-        sandbox.devBinds = [ "/dev/input/js0" ];
+        sandbox.devBinds = [
+          "/dev/input/js0"
+          "/dev/kvm"
+        ];
       };
     };
   };
@@ -175,10 +178,10 @@ let
   packagesEval = hm {
     cloister = {
       enable = true;
-      sandboxes.dev = {
-        packages = [ pkgs.hello ];
-        extraPackages = [ pkgs.jq ];
-      };
+      sandboxes.dev.extraPackages = [
+        pkgs.hello
+        pkgs.jq
+      ];
     };
   };
 
@@ -381,8 +384,11 @@ checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectEq "video integration toggle renders" true featuresConfig.video_enable)
   (checks.expectEq "printing integration toggle renders" true featuresConfig.printing_enable)
   (checks.expectEq "git integration toggle renders" true featuresConfig.git_enable)
-  (checks.expectEq "device binds render" [ "/dev/input/js0" ] featuresConfig.dev_binds)
-  (checks.expectContains "custom packages are included in PATH" "hello" packagesStaticArgs)
+  (checks.expectEq "device binds render" [
+    "/dev/input/js0"
+    "/dev/kvm"
+  ] featuresConfig.dev_binds)
+  (checks.expectContains "extraPackages include hello in PATH" "hello" packagesStaticArgs)
   (checks.expectContains "extraPackages are included in PATH" "jq" packagesStaticArgs)
   (checks.expectContains "validators expose wrapped command outside sandbox"
     "alias cloister-wayland-validate='__cloister_run_dev -c cloister-wayland-validate'"

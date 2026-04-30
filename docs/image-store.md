@@ -52,7 +52,7 @@ See `examples/image-store.nix` for a complete sandbox example.
 
 When `image-store` is enabled, Cloister builds the store input set from paths it already knows the sandbox needs, including:
 
-- packages from `packages` and `extraPackages`
+- internally managed base packages and configured `extraPackages`
 - shell and runtime helpers Cloister injects
 - symlink targets inside the sandbox config
 - bind sources that resolve into `/nix/store`

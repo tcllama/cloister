@@ -308,7 +308,7 @@ let
 
   storeInputs = lib.unique (
     builtins.filter (p: p != null) (
-      sCfg.packages
+      sCfg._basePackages
       ++ sCfg.extraPackages
       ++ [ pkgs.tini ]
       ++ lib.optional gpuEnabled pkgs.mesa

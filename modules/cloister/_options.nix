@@ -43,6 +43,55 @@ let
     };
   };
 
+  dbusPolicySubmodule = {
+    options = {
+      talk = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Well-known bus names to allow TALK access for (method calls and signals).
+          Supports a ".*" suffix to match sub-names.
+        '';
+      };
+
+      own = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Well-known bus names to allow OWN access for (RequestName/ReleaseName).
+          Supports a ".*" suffix to match sub-names.
+        '';
+      };
+
+      see = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Well-known bus names to allow SEE access for (visibility in ListNames, NameOwnerChanged).
+          Supports a ".*" suffix to match sub-names.
+        '';
+      };
+
+      call = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        description = ''
+          Per-name rules for allowed method calls. Keys are well-known bus names,
+          values are lists of RULE strings in the form [METHOD][@PATH].
+        '';
+      };
+
+      broadcast = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        description = ''
+          Per-name rules for allowed broadcast signals. Keys are well-known bus names,
+          values are lists of RULE strings in the form [METHOD][@PATH].
+        '';
+      };
+    };
+  };
+
   # The per-sandbox submodule: options + defaults + registry rendering.
   # This is the ONLY place that writes to config.cloister.sandboxes.<name>.
   # External modules (_sandbox.nix, _registry.nix, _wrappers.nix) only READ.
@@ -52,6 +101,23 @@ let
       # --- Registry rendering (computed from submodule's own config) ---
       regCfg = config.registry;
       shellLib = shells.${config.shell.name};
+      basePackages = [
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.findutils
+        pkgs.gawk
+        pkgs.git
+        pkgs.gnugrep
+        pkgs.gnused
+        pkgs.gnutar
+        pkgs.gzip
+        pkgs.less
+        pkgs.nix
+        pkgs.openssh
+        pkgs.which
+        shellLib.package
+      ];
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
       generatedLauncherNames = map (profileName: "clb-${profileName}") (
@@ -177,7 +243,6 @@ let
       wrappableInteractiveCommands = lib.filter (
         cmd: !builtins.elem cmd regCfg.noWrap
       ) regCfg.interactiveCommands;
-      wrappableExtraCommands = lib.filter (cmd: !builtins.elem cmd regCfg.noWrap) regCfg.extraCommands;
 
       wrappableFunctions = lib.filter (n: !builtins.elem n regCfg.noWrap) functionNames;
 
@@ -211,7 +276,7 @@ let
               else
                 "__cloister_run_${name} -c ${cmd}"
             )
-          ) (wrappableCommands ++ wrappableExtraCommands);
+          ) wrappableCommands;
 
           renderOutsideInteractiveCommands = lib.concatMapStringsSep "\n" (
             cmd:
@@ -285,10 +350,10 @@ let
     in
     {
       options = {
-        packages = lib.mkOption {
+        _basePackages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
-          default = [ ];
-          description = "Packages available inside the sandbox. Their bin dirs form the base PATH.";
+          internal = true;
+          description = "Internal base package set required for the sandbox shell and core tools.";
         };
 
         extraPackages = lib.mkOption {
@@ -335,7 +400,7 @@ let
 
                     hostConfig = lib.mkOption {
                       type = lib.types.bool;
-                      default = true;
+                      default = false;
                       description = "Bind host shell configuration into the sandbox.";
                     };
 
@@ -730,6 +795,12 @@ let
             description = "Files to copy into the sandbox state writable. Useful for config files you want to edit inside the sandbox without affecting the host. Missing source files fail startup.";
           };
 
+          devBinds = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Arbitrary device paths to pass through with --dev-bind. Missing devices are warned about at runtime.";
+          };
+
           env = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = { };
@@ -746,12 +817,6 @@ let
               The default is set in the submodule config block (locale variables).
               Use `lib.mkAfter` to append more while preserving those defaults.
             '';
-          };
-
-          devBinds = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Arbitrary device paths to pass through with --dev-bind (e.g. /dev/video0). Missing devices are warned about at runtime.";
           };
 
           seccomp = {
@@ -1106,51 +1171,17 @@ let
             description = "Desktop integration toggles for portals and notifications.";
           };
 
-          policies = {
-            talk = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = ''
-                Well-known bus names to allow TALK access for (method calls and signals).
-                Supports a ".*" suffix to match sub-names.
-              '';
-            };
+          rawPolicies = lib.mkOption {
+            type = lib.types.submodule dbusPolicySubmodule;
+            default = { };
+            description = "Raw xdg-dbus-proxy policy rules appended to Cloister's generated portal policies.";
+          };
 
-            own = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = ''
-                Well-known bus names to allow OWN access for (RequestName/ReleaseName).
-                Supports a ".*" suffix to match sub-names.
-              '';
-            };
-
-            see = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = ''
-                Well-known bus names to allow SEE access for (visibility in ListNames, NameOwnerChanged).
-                Supports a ".*" suffix to match sub-names.
-              '';
-            };
-
-            call = lib.mkOption {
-              type = lib.types.attrsOf (lib.types.listOf lib.types.str);
-              default = { };
-              description = ''
-                Per-name rules for allowed method calls. Keys are well-known bus names,
-                values are lists of RULE strings in the form [METHOD][@PATH].
-              '';
-            };
-
-            broadcast = lib.mkOption {
-              type = lib.types.attrsOf (lib.types.listOf lib.types.str);
-              default = { };
-              description = ''
-                Per-name rules for allowed broadcast signals. Keys are well-known bus names,
-                values are lists of RULE strings in the form [METHOD][@PATH].
-              '';
-            };
+          _portalPolicies = lib.mkOption {
+            type = lib.types.submodule dbusPolicySubmodule;
+            default = { };
+            internal = true;
+            description = "Internal D-Bus policy rules generated from dbus.portal toggles.";
           };
         };
 
@@ -1313,15 +1344,6 @@ let
             '';
           };
 
-          extraCommands = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = ''
-              Additional command names appended to wrapped commands.
-              Command names must match ${patterns.safeCommand}.
-            '';
-          };
-
           interactiveCommands = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];
@@ -1375,7 +1397,6 @@ let
       # --- Submodule config: defaults + computed registry ---
       config = lib.mkMerge [
         (lib.mkIf (config.preset == "hardened") {
-          shell.hostConfig = lib.mkDefault false;
           validators.enable = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault false;
@@ -1411,7 +1432,6 @@ let
           };
         })
         (lib.mkIf (config.preset == "gui") {
-          shell.hostConfig = lib.mkDefault false;
 
           network.enable = lib.mkDefault true;
           git.enable = lib.mkDefault false;
@@ -1429,7 +1449,6 @@ let
           };
         })
         (lib.mkIf (config.preset == "chromium") {
-          shell.hostConfig = lib.mkDefault false;
 
           network.enable = lib.mkDefault true;
           git.enable = lib.mkDefault false;
@@ -1450,24 +1469,7 @@ let
           };
         })
         {
-          # Minimal packages — just enough for a functional sandbox shell
-          packages = lib.mkDefault [
-            pkgs.bash
-            pkgs.coreutils
-            pkgs.curl
-            pkgs.findutils
-            pkgs.gawk
-            pkgs.git
-            pkgs.gnugrep
-            pkgs.gnused
-            pkgs.gnutar
-            pkgs.gzip
-            pkgs.less
-            pkgs.nix
-            pkgs.openssh
-            pkgs.which
-            shellLib.package
-          ];
+          _basePackages = basePackages;
 
           extraPackages = lib.mkMerge [
             (lib.mkIf config.validators.enable (lib.mkDefault validatorPackages))
@@ -1479,7 +1481,7 @@ let
             ])
           ];
 
-          registry.extraCommands = lib.mkIf config.validators.enable (lib.mkDefault validatorCommands);
+          registry.commands = lib.mkIf config.validators.enable (lib.mkAfter validatorCommands);
 
           sandbox = {
             dirs = lib.mkDefault [
@@ -1706,7 +1708,7 @@ let
             ])
           ];
 
-          dbus.policies = {
+          dbus._portalPolicies = {
             talk = lib.mkMerge [
               (lib.mkIf notificationBusEnabled [ "org.freedesktop.Notifications" ])
             ];

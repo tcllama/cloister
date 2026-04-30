@@ -40,7 +40,7 @@
         camera = true;
         openUri = true;
       };
-      policies.talk = [
+      rawPolicies.talk = [
         "org.freedesktop.ScreenSaver"
         "org.kde.StatusNotifierWatcher"
         "com.canonical.AppMenu.Registrar"

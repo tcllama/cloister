@@ -36,16 +36,26 @@ let
   dbusPolicyFlags =
     sCfg:
     let
-      talkFlags = map (name: "--talk=${name}") sCfg.dbus.policies.talk;
-      ownFlags = map (name: "--own=${name}") sCfg.dbus.policies.own;
-      seeFlags = map (name: "--see=${name}") sCfg.dbus.policies.see;
+      portalPolicies = sCfg.dbus._portalPolicies;
+      inherit (sCfg.dbus) rawPolicies;
+      talkFlags = map (name: "--talk=${name}") (portalPolicies.talk ++ rawPolicies.talk);
+      ownFlags = map (name: "--own=${name}") (portalPolicies.own ++ rawPolicies.own);
+      seeFlags = map (name: "--see=${name}") (portalPolicies.see ++ rawPolicies.see);
+      mergeRuleAttrs = builtins.zipAttrsWith (_: values: lib.concatLists values) [
+        portalPolicies.call
+        rawPolicies.call
+      ];
+      mergeBroadcastAttrs = builtins.zipAttrsWith (_: values: lib.concatLists values) [
+        portalPolicies.broadcast
+        rawPolicies.broadcast
+      ];
       callFlags = lib.concatLists (
-        lib.mapAttrsToList (name: rules: map (rule: "--call=${name}=${rule}") rules) sCfg.dbus.policies.call
+        lib.mapAttrsToList (name: rules: map (rule: "--call=${name}=${rule}") rules) mergeRuleAttrs
       );
       broadcastFlags = lib.concatLists (
         lib.mapAttrsToList (
           name: rules: map (rule: "--broadcast=${name}=${rule}") rules
-        ) sCfg.dbus.policies.broadcast
+        ) mergeBroadcastAttrs
       );
     in
     talkFlags ++ ownFlags ++ seeFlags ++ callFlags ++ broadcastFlags;
@@ -254,7 +264,7 @@ let
           ''
       );
 
-      allPackages = sCfg.packages ++ sCfg.extraPackages;
+      allPackages = sCfg._basePackages ++ sCfg.extraPackages;
 
       computedEnv = {
         PATH = lib.makeBinPath allPackages;

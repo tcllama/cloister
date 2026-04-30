@@ -96,7 +96,6 @@ let
     lib.attrNames sCfg.registry.functions
   );
   generatedLauncherCommandCollisions = lib.intersectLists generatedLauncherNames sCfg.registry.commands;
-  generatedLauncherExtraCommandCollisions = lib.intersectLists generatedLauncherNames sCfg.registry.extraCommands;
   invalidDelegatedMountKeyMessages = lib.concatStringsSep "; " (
     map (
       _: "workerBroker availableDelegatedPerDirMounts keys must be sandbox-relative descendant paths"
@@ -256,10 +255,6 @@ in
     message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.commands: ${lib.concatStringsSep ", " generatedLauncherCommandCollisions}";
   }
   {
-    assertion = generatedLauncherExtraCommandCollisions == [ ];
-    message = "cloister.sandboxes.${name}: generated worker broker launcher names collide with registry.extraCommands: ${lib.concatStringsSep ", " generatedLauncherExtraCommandCollisions}";
-  }
-  {
     assertion =
       !sCfg.gui.desktopEntry.enable || (sCfg.defaultCommand != null && sCfg.defaultCommand != [ ]);
     message = "cloister.sandboxes.${name}: gui.desktopEntry.enable requires defaultCommand to be set so the launcher does not open an interactive shell.";
@@ -280,11 +275,16 @@ in
       validDbusName =
         n: builtins.match dbusNamePattern n != null || builtins.match dbusWildcardPattern n != null;
       allDbusNames =
-        sCfg.dbus.policies.talk
-        ++ sCfg.dbus.policies.own
-        ++ sCfg.dbus.policies.see
-        ++ lib.attrNames sCfg.dbus.policies.call
-        ++ lib.attrNames sCfg.dbus.policies.broadcast;
+        sCfg.dbus.rawPolicies.talk
+        ++ sCfg.dbus.rawPolicies.own
+        ++ sCfg.dbus.rawPolicies.see
+        ++ lib.attrNames sCfg.dbus.rawPolicies.call
+        ++ lib.attrNames sCfg.dbus.rawPolicies.broadcast
+        ++ sCfg.dbus._portalPolicies.talk
+        ++ sCfg.dbus._portalPolicies.own
+        ++ sCfg.dbus._portalPolicies.see
+        ++ lib.attrNames sCfg.dbus._portalPolicies.call
+        ++ lib.attrNames sCfg.dbus._portalPolicies.broadcast;
       invalidDbusNames = builtins.filter (n: !validDbusName n) allDbusNames;
     in
     {

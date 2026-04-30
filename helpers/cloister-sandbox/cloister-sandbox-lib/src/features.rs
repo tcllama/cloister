@@ -1,4 +1,4 @@
-//! Runtime feature detection: wayland, pulseaudio, gpu, dbus, device binds.
+//! Runtime feature detection: wayland, pulseaudio, gpu, dbus, and device integrations.
 
 use std::path::{Path, PathBuf};
 
@@ -288,7 +288,7 @@ pub fn gpu_args(shm: bool) -> Vec<String> {
     args
 }
 
-/// Build device bind arguments (for arbitrary devices like /dev/video0).
+/// Build device bind arguments (for arbitrary devices like /dev/kvm).
 pub fn dev_bind_args(paths: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     for path in paths {

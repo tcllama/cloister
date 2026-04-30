@@ -30,7 +30,7 @@ pkgs.testers.runNixOSTest (_: {
                 fileChooser = true;
                 openUri = true;
               };
-              policies.talk = [ "org.example.Service" ];
+              rawPolicies.talk = [ "org.example.Service" ];
             };
           };
         };

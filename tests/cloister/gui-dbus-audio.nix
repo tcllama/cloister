@@ -40,7 +40,7 @@ let
           enable = true;
           log = true;
           portal.openUri = true;
-          policies = {
+          rawPolicies = {
             talk = [ "org.example.Service" ];
             own = [ "org.example.Owner" ];
             see = [ "org.example.Observer" ];
@@ -270,7 +270,7 @@ let
       enable = true;
       sandboxes.browser.dbus = {
         enable = true;
-        policies.talk = [ "invalid" ];
+        rawPolicies.talk = [ "invalid" ];
       };
     };
   };
@@ -280,7 +280,7 @@ let
       enable = true;
       sandboxes.browser.dbus = {
         enable = true;
-        policies.talk = [ "org.freedesktop.*.Desktop" ];
+        rawPolicies.talk = [ "org.freedesktop.*.Desktop" ];
       };
     };
   };
@@ -359,7 +359,7 @@ let
 
   staticAssertions = [
     (checks.expectTrue "openUri adds portal call policy" (
-      browser.dbus.policies.call ? "org.freedesktop.portal.Desktop"
+      browser.dbus._portalPolicies.call ? "org.freedesktop.portal.Desktop"
     ))
     (checks.expectContains "desktop entry exec uses wrapper" "/bin/cl-browser" desktop.exec)
     (checks.expectContains "desktop entry exec args rendered" "%U" desktop.exec)

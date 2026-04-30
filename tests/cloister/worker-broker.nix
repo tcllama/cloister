@@ -320,23 +320,6 @@ let
     };
   };
 
-  extraCommandCollision = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        registry.extraCommands = [ "clb-ephemeral" ];
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
-
   disabledLauncherCollisionIgnored = hm {
     cloister = {
       enable = true;
@@ -471,10 +454,6 @@ checks.mkCheck "test-cloister-worker-broker" [
   (checks.expectAssertionMessage "worker broker generated launchers cannot collide with commands"
     commandCollision.assertions
     "generated worker broker launcher names collide with registry.commands: clb-ephemeral"
-  )
-  (checks.expectAssertionMessage "worker broker generated launchers cannot collide with extraCommands"
-    extraCommandCollision.assertions
-    "generated worker broker launcher names collide with registry.extraCommands: clb-ephemeral"
   )
   (checks.expectFalse "disabled worker broker ignores generated launcher collisions" (
     builtins.any (assertion: !assertion.assertion) disabledLauncherCollisionIgnored.assertions
