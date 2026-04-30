@@ -220,7 +220,6 @@ CLOISTER_DIR=/path/to/project cl-dev
 - **State persistence** - bind mount categories for caches, config, volume-backed storage, and per-directory isolation across multiple host roots
 - **Home-manager integration** - bind Nix store-backed config files directly into the sandbox
 - **Wayland forwarding** - with `wp-security-context-v1` to filter privileged protocols
-- **X11 forwarding** - `DISPLAY` passthrough (no client isolation - prefer Wayland)
 - **PipeWire / PulseAudio** - audio with optional per-sandbox device filtering via WirePlumber
 - **D-Bus notifications** - per-sandbox filtered proxy with configurable policies
 - **SSH agent** - forward `SSH_AUTH_SOCK` into the sandbox (optional fingerprint filtering + timeout)

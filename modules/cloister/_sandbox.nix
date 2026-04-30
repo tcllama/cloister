@@ -173,7 +173,7 @@ let
     name: sCfg:
     let
       shellLib = shells.${sCfg.shell.name};
-      guiEnabled = sCfg.gui.wayland.enable || sCfg.gui.x11.enable;
+      guiEnabled = sCfg.gui.wayland.enable;
       gpuEnabled = sCfg.gui.gpu.enable;
       # --- Anonymization ---
       anonymize = sCfg.sandbox.anonymize.enable;

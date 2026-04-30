@@ -2378,11 +2378,6 @@ fn run() -> i32 {
         wayland_socket_path = None;
     }
 
-    // X11
-    if config.x11_enable {
-        extra_args.extend(features::x11_args(&config.sandbox_home));
-    }
-
     // GPU
     if config.gpu_enable {
         extra_args.extend(features::gpu_args(config.gpu_shm));

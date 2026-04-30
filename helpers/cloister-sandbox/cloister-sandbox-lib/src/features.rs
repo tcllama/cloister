@@ -1,4 +1,4 @@
-//! Runtime feature detection: wayland, pulseaudio, x11, gpu, dbus, device binds.
+//! Runtime feature detection: wayland, pulseaudio, gpu, dbus, device binds.
 
 use std::path::{Path, PathBuf};
 
@@ -92,55 +92,6 @@ pub fn wayland_raw_args(host_xdg_runtime_dir: &str, sandbox_xdg_runtime_dir: &st
         "WAYLAND_DISPLAY".to_string(),
         display,
     ]);
-    args
-}
-
-/// Build X11 forwarding arguments.
-pub fn x11_args(sandbox_home: &str) -> Vec<String> {
-    let display = match std::env::var("DISPLAY") {
-        Ok(d) if !d.is_empty() => d,
-        _ => return Vec::new(),
-    };
-
-    let mut args = vec!["--setenv".to_string(), "DISPLAY".to_string(), display];
-
-    if Path::new("/tmp/.X11-unix").is_dir() {
-        args.extend([
-            "--ro-bind".to_string(),
-            "/tmp/.X11-unix".to_string(),
-            "/tmp/.X11-unix".to_string(),
-        ]);
-    }
-
-    if let Ok(xauth) = std::env::var("XAUTHORITY") {
-        if !xauth.is_empty() {
-            if let Err(e) = socket::validate_existing_regular_file(&xauth) {
-                eprintln!("Warning: invalid XAUTHORITY path '{xauth}': {e}");
-            } else {
-                args.extend([
-                    "--setenv".to_string(),
-                    "XAUTHORITY".to_string(),
-                    xauth.clone(),
-                ]);
-                args.extend(["--ro-bind".to_string(), xauth.clone(), xauth]);
-            }
-        }
-    } else {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let xauth_path = format!("{home}/.Xauthority");
-        if socket::validate_existing_regular_file(&xauth_path).is_ok() {
-            let dest = format!("{sandbox_home}/.Xauthority");
-            args.extend([
-                "--setenv".to_string(),
-                "XAUTHORITY".to_string(),
-                dest.clone(),
-                "--ro-bind".to_string(),
-                xauth_path,
-                dest,
-            ]);
-        }
-    }
-
     args
 }
 

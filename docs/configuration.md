@@ -454,22 +454,14 @@ cloister.sandboxes.dev.gui.wayland.enable = true;
 
 By default, `wp-security-context-v1` is required - the compositor filters which protocol globals are advertised to the sandbox, hiding privileged extensions (screencopy, virtual keyboard injection, etc.). Disable with `gui.wayland.securityContext.enable = false` for raw socket passthrough.
 
-### X11
-
-```nix
-cloister.sandboxes.dev.gui.x11.enable = true;
-```
-
-> **Warning:** X11 provides no client isolation. Any X11 client can keylog, take screenshots, and inject input into other clients on the same display. Prefer Wayland with `securityContext` for GUI applications.
-
 ### GPU acceleration
 
 ```nix
-cloister.sandboxes.dev.gui.gpu.enable = true;  # auto-enabled when Wayland or X11 is on
+cloister.sandboxes.dev.gui.gpu.enable = true;  # auto-enabled when Wayland is on
 cloister.sandboxes.dev.gui.gpu.shm = true;     # default - private tmpfs at /dev/shm for GPU drivers
 ```
 
-Binds `/dev/dri` into the sandbox for hardware-accelerated rendering. Auto-enabled when Wayland or X11 is active, but can be explicitly disabled with `gui.gpu.enable = false`. A private tmpfs is mounted at `/dev/shm` by default (not the host's `/dev/shm`) since most GPU drivers and multi-process applications (Chromium, Firefox) require POSIX shared memory.
+Binds `/dev/dri` into the sandbox for hardware-accelerated rendering. Auto-enabled when Wayland is active, but can be explicitly disabled with `gui.gpu.enable = false`. A private tmpfs is mounted at `/dev/shm` by default (not the host's `/dev/shm`) since most GPU drivers and multi-process applications (Chromium, Firefox) require POSIX shared memory.
 
 In addition to `/dev/dri`, the sandbox binary automatically detects and binds the following paths when they exist (all as `--ro-bind`, not `--dev-bind`):
 
@@ -491,7 +483,7 @@ When set, `GDK_SCALE`, `GDK_DPI_SCALE`, and `QT_SCALE_FACTOR` are configured ins
 
 ```nix
 cloister.sandboxes.dev.gui.gtk = {
-  enable = true;    # default - auto-enabled when Wayland or X11 is on
+  enable = true;    # default - auto-enabled when Wayland is on
   theme = "Adwaita"; # default
 };
 ```
@@ -854,13 +846,12 @@ See the sections above for usage examples and explanations.
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
 | `gui.wayland.enable` | bool | `false` | Forward Wayland display socket |
 | `gui.wayland.securityContext.enable` | bool | `true` | Require wp-security-context-v1 for Wayland |
-| `gui.x11.enable` | bool | `false` | Forward X11 DISPLAY variable |
-| `gui.gpu.enable` | bool | `false`\* | Bind /dev/dri for GPU acceleration (*auto-enabled with Wayland/X11) |
+| `gui.gpu.enable` | bool | `false`\* | Bind /dev/dri for GPU acceleration (*auto-enabled with Wayland) |
 | `gui.gpu.shm` | bool | `true` | Mount a private tmpfs at /dev/shm when GPU is enabled (does not expose host shared memory) |
 | `gui.scaleFactor` | nullOr float | `null` | Display scale factor for HiDPI (sets `GDK_SCALE`, `GDK_DPI_SCALE`, `QT_SCALE_FACTOR`) |
 | `gui.dataPackages` | list of package | `[hicolor-icon-theme]`* | Packages whose `/share` dirs form `XDG_DATA_DIRS` (*`gtk3`/`gtk4`/`gsettings-desktop-schemas` added when `gui.gtk.enable`) |
-| `gui.fonts.packages` | list of package | `[]`* | Font packages for fontconfig (*`dejavu_fonts` added when Wayland/X11 enabled) |
-| `gui.gtk.enable` | bool | `false`* | Enable GTK theming (*auto-enabled with Wayland/X11) |
+| `gui.fonts.packages` | list of package | `[]`* | Font packages for fontconfig (*`dejavu_fonts` added when Wayland enabled) |
+| `gui.gtk.enable` | bool | `false`* | Enable GTK theming (*auto-enabled with Wayland) |
 | `gui.gtk.theme` | str | `"Adwaita"` | GTK theme name (sets `GTK_THEME` env var) |
 | `gui.gtk.packages` | list of package | `[]` | Additional GTK theme packages merged into `XDG_DATA_DIRS` |
 | `gui.qt.enable` | bool | `false` | Enable Qt theming (`QT_QPA_PLATFORMTHEME`, etc.) |

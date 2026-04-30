@@ -37,7 +37,7 @@ let
           preset = "gui";
           dbus.enable = false;
           dbus.portal.notifications = false;
-          gui.x11.enable = true;
+          gui.wayland.enable = false;
         };
         chromium = {
           preset = "chromium";
@@ -79,7 +79,7 @@ checks.mkCheck "test-cloister-presets" [
   (checks.expectFalse "developer override can disable git" overrideSandboxes.dev.git.enable)
   (checks.expectFalse "developer override can disable portal notifications" overrideSandboxes.dev.dbus.portal.notifications)
   (checks.expectFalse "gui override can disable dbus" overrideSandboxes.gui.dbus.enable)
-  (checks.expectTrue "gui override can enable x11" overrideSandboxes.gui.gui.x11.enable)
+  (checks.expectFalse "gui override can disable wayland" overrideSandboxes.gui.gui.wayland.enable)
   (checks.expectFalse "chromium override can disable pulseOnly" overrideSandboxes.chromium.audio.pipewire.pulseOnly)
   (checks.expectFalse "chromium override can disable chromium seccomp mode" overrideSandboxes.chromium.sandbox.seccomp.allowChromiumSandbox)
   (checks.expectFalse "plain sandbox stays inert for validators" plainSandbox.validators.enable)

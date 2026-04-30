@@ -40,8 +40,6 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub wayland_security_context: bool,
     #[serde(default)]
-    pub x11_enable: bool,
-    #[serde(default)]
     pub gpu_enable: bool,
     #[serde(default)]
     pub gpu_shm: bool,

@@ -436,7 +436,6 @@ let
       network_namespace = sCfg.network.namespace;
       wayland_enable = sCfg.gui.wayland.enable;
       wayland_security_context = sCfg.gui.wayland.securityContext.enable;
-      x11_enable = sCfg.gui.x11.enable;
       gpu_enable = gpuEnabled;
       gpu_shm = sCfg.gui.gpu.shm;
       ssh_enable = sCfg.ssh.enable;

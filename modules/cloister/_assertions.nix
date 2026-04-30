@@ -205,7 +205,7 @@ in
   }
   {
     assertion = !sCfg.gui.desktopEntry.enable || guiEnabled;
-    message = "cloister.sandboxes.${name}: gui.desktopEntry.enable requires gui.wayland.enable or gui.x11.enable.";
+    message = "cloister.sandboxes.${name}: gui.desktopEntry.enable requires gui.wayland.enable.";
   }
   {
     assertion = !workerBrokerCfg.enable || workerBrokerCfg.spawnableProfiles != { };

@@ -882,20 +882,6 @@ let
             };
           };
 
-          x11 = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = ''
-                Forward the DISPLAY environment variable into the sandbox for X11/XWayland applications.
-
-                WARNING: X11 provides no client isolation. Any X11 client can keylog,
-                take screenshots, and inject input into other clients on the same display.
-                Prefer Wayland with securityContext for GUI applications when possible.
-              '';
-            };
-          };
-
           scaleFactor = lib.mkOption {
             type = lib.types.nullOr lib.types.float;
             default = null;
@@ -1498,7 +1484,6 @@ let
           validators.enable = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault false;
-          gui.x11.enable = lib.mkDefault false;
 
           ssh.enable = lib.mkDefault false;
           git.enable = lib.mkDefault false;
@@ -1518,7 +1503,6 @@ let
           shell.hostConfig = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault false;
-          gui.x11.enable = lib.mkDefault false;
 
           network.enable = lib.mkDefault true;
           git.enable = lib.mkDefault true;
@@ -1544,7 +1528,6 @@ let
           dbus.portal.notifications = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault true;
-          gui.x11.enable = lib.mkDefault false;
 
           audio = {
             pulseaudio.enable = lib.mkDefault false;
@@ -1564,7 +1547,6 @@ let
           dbus.portal.notifications = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault true;
-          gui.x11.enable = lib.mkDefault false;
 
           sandbox.seccomp.allowChromiumSandbox = lib.mkDefault true;
 
@@ -1775,11 +1757,11 @@ let
           );
 
           gui = {
-            # Auto-enable GPU when any GUI display protocol is active
-            gpu.enable = lib.mkDefault (config.gui.wayland.enable || config.gui.x11.enable);
+            # Auto-enable GPU when Wayland is active
+            gpu.enable = lib.mkDefault config.gui.wayland.enable;
 
-            # Auto-enable GTK theme integration when any GUI display protocol is active
-            gtk.enable = lib.mkDefault (config.gui.wayland.enable || config.gui.x11.enable);
+            # Auto-enable GTK theme integration when Wayland is active
+            gtk.enable = lib.mkDefault config.gui.wayland.enable;
 
             # Default data packages for GUI sandboxes: icon theme fallback + conditionally GTK theme assets
             dataPackages = lib.mkDefault (
@@ -1797,7 +1779,7 @@ let
 
             # Default font packages for GUI sandboxes
             fonts.packages = lib.mkDefault (
-              lib.optionals (config.gui.wayland.enable || config.gui.x11.enable) [
+              lib.optionals config.gui.wayland.enable [
                 pkgs.dejavu_fonts
               ]
             );

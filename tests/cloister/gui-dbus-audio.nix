@@ -66,18 +66,8 @@ let
     cloister = {
       enable = true;
       sandboxes.browser = {
-        gui = {
-          wayland.enable = false;
-          x11.enable = false;
-        };
+        gui.wayland.enable = false;
       };
-    };
-  };
-
-  x11Eval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.browser.gui.x11.enable = true;
     };
   };
 
@@ -406,12 +396,11 @@ let
   betaConfig = multiPipewireEval.config.cloister._internal.sandboxConfigs.beta;
   browserStaticArgs = builtins.toJSON sandboxConfig.static_bwrap_args;
   browserDynamicBinds = builtins.toJSON sandboxConfig.dynamic_binds;
-  x11StaticArgs = builtins.toJSON x11Config.static_bwrap_args;
+  rawWaylandStaticArgs = builtins.toJSON rawWaylandConfig.static_bwrap_args;
   pipewireConf = eval.config.xdg.configFile."pipewire/pipewire.conf.d/99-cloister.conf".text;
   wireplumberConf =
     eval.config.xdg.configFile."wireplumber/wireplumber.conf.d/99-cloister-browser.conf".text;
   guiOffConfig = guiOffEval.config.cloister._internal.sandboxConfigs.browser;
-  x11Config = x11Eval.config.cloister._internal.sandboxConfigs.browser;
   rawWaylandConfig = rawWaylandEval.config.cloister._internal.sandboxConfigs.browser;
   allPortalsConfig = allPortalsEval.config.cloister._internal.sandboxConfigs.browser;
   sshOnlyConfig = sshOnlyEval.config.cloister._internal.sandboxConfigs.browser;
@@ -458,7 +447,9 @@ let
       dbusProxyPath
     )
     (checks.expectContains "gtk theme renders" ''"GTK_THEME","Graphite-Light"'' browserStaticArgs)
-    (checks.expectContains "gtk default theme renders" ''"GTK_THEME","Graphite-Light"'' x11StaticArgs)
+    (checks.expectContains "gtk default theme renders" ''"GTK_THEME","Graphite-Light"''
+      rawWaylandStaticArgs
+    )
     (checks.expectContains "gtk settings gtk3 bind renders"
       ''"dest":"$HOME/.config/gtk-3.0/settings.ini"''
       browserDynamicBinds
@@ -485,8 +476,6 @@ let
       (builtins.toJSON sandboxConfig.passthrough_env)
     )
     (checks.expectEq "wayland toggle renders" true sandboxConfig.wayland_enable)
-    (checks.expectEq "x11 toggle renders" false sandboxConfig.x11_enable)
-    (checks.expectEq "x11 can be enabled" true x11Config.x11_enable)
     (checks.expectEq "wayland security context defaults on" true sandboxConfig.wayland_security_context)
     (checks.expectEq "wayland security context can be disabled" false
       rawWaylandConfig.wayland_security_context

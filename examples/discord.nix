@@ -1,6 +1,6 @@
 # Discord sandbox example
 #
-# A sandboxed Discord client with Wayland/X11, GPU, filtered PipeWire audio
+# A sandboxed Discord client with Wayland, GPU, filtered PipeWire audio
 # (speakers + microphone + camera), and D-Bus policies aligned with the Flatpak
 # default finish-args.
 #
