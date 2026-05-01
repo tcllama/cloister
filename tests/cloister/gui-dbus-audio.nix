@@ -45,7 +45,6 @@ let
         audio.pipewire = {
           enable = true;
           filters = {
-            enable = true;
             audioIn = true;
             videoIn = true;
             control = true;
@@ -171,19 +170,7 @@ let
         audio.pipewire = {
           enable = true;
           pulseOnly = true;
-          filters.enable = true;
         };
-      };
-    };
-  };
-
-  pulseOnlyWithoutFilters = hm {
-    cloister = {
-      enable = true;
-      sandboxes.listener.audio.pipewire = {
-        enable = true;
-        pulseOnly = true;
-        filters.enable = false;
       };
     };
   };
@@ -201,10 +188,7 @@ let
       sandboxes.player.audio.pipewire = {
         enable = true;
         pulseOnly = true;
-        filters = {
-          enable = true;
-          videoIn = true;
-        };
+        filters.videoIn = true;
       };
     };
   };
@@ -232,7 +216,6 @@ let
         audio.pipewire = {
           enable = true;
           pulseOnly = true;
-          filters.enable = true;
         };
       };
     };
@@ -275,14 +258,8 @@ let
     cloister = {
       enable = true;
       sandboxes = {
-        alpha.audio.pipewire = {
-          enable = true;
-          filters.enable = true;
-        };
-        beta.audio.pipewire = {
-          enable = true;
-          filters.enable = true;
-        };
+        alpha.audio.pipewire.enable = true;
+        beta.audio.pipewire.enable = true;
       };
     };
   };
@@ -448,9 +425,6 @@ let
     (checks.expectAssertionMessage "anonymize rejects native pipewire"
       anonymizeNativePipewire.assertions
       "it is not possible to anonymize a PipeWire socket"
-    )
-    (checks.expectAssertionMessage "pipewire requires filters" pulseOnlyWithoutFilters.assertions
-      "audio.pipewire.enable requires audio.pipewire.filters.enable = true"
     )
     (checks.expectAssertionMessage "desktop entry execArgs rejects metacharacters"
       invalidDesktopExecArgs.assertions

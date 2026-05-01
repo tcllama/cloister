@@ -121,22 +121,18 @@ let
       aliasNames = lib.attrNames regCfg.aliases;
       functionNames = lib.attrNames regCfg.functions;
       generatedLauncherNames = map (profileName: "clb-${profileName}") (
-        lib.attrNames config.workerBroker.spawnableProfiles
+        lib.attrNames config.workerBroker.profiles
       );
       invalidGeneratedLauncherNames = builtins.filter (
         launcherName: builtins.match patterns.safeCommand launcherName == null
       ) generatedLauncherNames;
-      generatedLaunchers =
-        if config.workerBroker.enable then
-          lib.mapAttrs' (
-            profileName: profile:
-            lib.nameValuePair "clb-${profileName}" {
-              profile = profileName;
-              inherit (profile) sandbox;
-            }
-          ) config.workerBroker.spawnableProfiles
-        else
-          { };
+      generatedLaunchers = lib.mapAttrs' (
+        profileName: profile:
+        lib.nameValuePair "clb-${profileName}" {
+          profile = profileName;
+          inherit (profile) sandbox;
+        }
+      ) config.workerBroker.profiles;
 
       sandboxHome =
         if config.sandbox.anonymize.enable then
@@ -437,9 +433,7 @@ let
         };
 
         workerBroker = {
-          enable = lib.mkEnableOption "worker broker support for spawnable sandbox profiles";
-
-          spawnableProfiles = lib.mkOption {
+          profiles = lib.mkOption {
             type = lib.types.attrsOf (
               lib.types.submodule {
                 options = {
@@ -458,40 +452,37 @@ let
 
                   delegatedPerDirMounts = lib.mkOption {
                     type = lib.types.attrsOf (
-                      lib.types.enum [
-                        "ro"
-                        "rw"
-                      ]
+                      lib.types.submodule {
+                        options = {
+                          mode = lib.mkOption {
+                            type = lib.types.enum [
+                              "ro"
+                              "rw"
+                            ];
+                            description = "Access mode for this delegated per-directory mount.";
+                          };
+
+                          path = lib.mkOption {
+                            type = lib.types.str;
+                            description = "Host base path exposed for this worker broker delegated mount.";
+                          };
+
+                          subPath = lib.mkOption {
+                            type = lib.types.nullOr lib.types.str;
+                            default = null;
+                            description = "Optional subpath under the delegated mount base path.";
+                          };
+                        };
+                      }
                     );
                     default = { };
-                    description = "Per-directory delegated mounts exposed to this worker broker profile.";
+                    description = "Per-directory delegated mounts exposed to this worker broker profile, keyed by sandbox-relative destination.";
                   };
                 };
               }
             );
             default = { };
-            description = "Spawnable worker broker profiles keyed by profile name.";
-          };
-
-          availableDelegatedPerDirMounts = lib.mkOption {
-            type = lib.types.attrsOf (
-              lib.types.submodule {
-                options = {
-                  path = lib.mkOption {
-                    type = lib.types.str;
-                    description = "Host base path exposed for worker broker delegated mounts.";
-                  };
-
-                  subPath = lib.mkOption {
-                    type = lib.types.nullOr lib.types.str;
-                    default = null;
-                    description = "Optional subpath under the delegated mount base path.";
-                  };
-                };
-              }
-            );
-            default = { };
-            description = "Available delegated per-directory mounts keyed by sandbox-relative path.";
+            description = "Worker broker profiles keyed by profile name. Non-empty profiles enable worker broker support.";
           };
 
           generatedLaunchers = lib.mkOption {
@@ -1126,38 +1117,25 @@ let
             };
 
             filters = {
-              enable = lib.mkOption {
-                type = lib.types.bool;
-                default = false;
-                description = ''
-                  Enable strict PipeWire filtering via WirePlumber access rules.
-                  When true, a dedicated PipeWire socket is created and only the
-                  specified media classes and capabilities are exposed to the sandbox.
-                  Defaults to audioOut=true and everything else disabled.
-                '';
-              };
               audioOut = lib.mkOption {
                 type = lib.types.bool;
                 default = true;
                 description = ''
-                  Allow playback to audio sinks (media.class: "Audio/Sink").
-                  Only takes effect if filters.enable is true.
+                  Allow playback to audio sinks (media.class: "Audio/Sink") when PipeWire audio is enabled.
                 '';
               };
               audioIn = lib.mkOption {
                 type = lib.types.bool;
                 default = false;
                 description = ''
-                  Allow recording from audio sources (media.class: "Audio/Source").
-                  Only takes effect if filters.enable is true.
+                  Allow recording from audio sources (media.class: "Audio/Source") when PipeWire audio is enabled.
                 '';
               };
               videoIn = lib.mkOption {
                 type = lib.types.bool;
                 default = false;
                 description = ''
-                  Allow recording from cameras/video sources (media.class: "Video/Source").
-                  Only takes effect if filters.enable is true.
+                  Allow recording from cameras/video sources (media.class: "Video/Source") when PipeWire audio is enabled.
                 '';
               };
               control = lib.mkOption {
@@ -1165,8 +1143,7 @@ let
                 default = false;
                 description = ''
                   Grant 'w' (write) permissions to allow changing volume and mute state
-                  of visible nodes.
-                  Only takes effect if filters.enable is true.
+                  of visible nodes when PipeWire audio is enabled.
                 '';
               };
               routing = lib.mkOption {
@@ -1174,8 +1151,7 @@ let
                 default = false;
                 description = ''
                   Grant 'm' (metadata) permissions to allow changing default system
-                  routing, moving streams, and managing metadata.
-                  Only takes effect if filters.enable is true.
+                  routing, moving streams, and managing metadata when PipeWire audio is enabled.
                 '';
               };
             };
@@ -1343,7 +1319,6 @@ let
             pipewire = {
               enable = lib.mkDefault true;
               pulseOnly = lib.mkDefault true;
-              filters.enable = lib.mkDefault true;
             };
           };
         })
@@ -1516,8 +1491,6 @@ let
             );
           };
 
-          audio.pipewire.filters.enable = lib.mkDefault config.audio.pipewire.enable;
-
           gui = {
             packages = lib.mkDefault (
               lib.optionals config.gui.enable [
@@ -1541,8 +1514,7 @@ let
           registry.rendered = { inherit inside outside; };
 
           workerBroker.generatedLaunchers = generatedLaunchers;
-          workerBroker.invalidGeneratedLauncherNames =
-            if config.workerBroker.enable then invalidGeneratedLauncherNames else [ ];
+          workerBroker.invalidGeneratedLauncherNames = invalidGeneratedLauncherNames;
 
           init.rendered = lib.mkDefault (
             lib.concatStringsSep "\n" (

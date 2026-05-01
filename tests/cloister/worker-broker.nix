@@ -4,45 +4,13 @@
   ...
 }:
 let
-  emptyProfiles = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.workerBroker = {
-        enable = true;
-        spawnableProfiles = { };
-      };
-    };
-  };
-
   missingSandbox = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.workerBroker = {
-        enable = true;
-        spawnableProfiles.ephemeral = {
-          sandbox = "worker";
-          workspace.mode = "project-overlay";
-        };
+      sandboxes.dev.workerBroker.profiles.ephemeral = {
+        sandbox = "worker";
+        workspace.mode = "project-overlay";
       };
-    };
-  };
-
-  missingDelegatedMount = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts = {
-              ".cache/pre-commit" = "ro";
-            };
-          };
-        };
-      };
-      sandboxes.worker = { };
     };
   };
 
@@ -51,274 +19,113 @@ let
       enable = true;
       sandboxes.dev = {
         sandbox.bindWorkingDirectory = false;
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
+        workerBroker.profiles.ephemeral = {
+          sandbox = "worker";
+          workspace.mode = "project-overlay";
         };
       };
       sandboxes.worker = { };
     };
   };
 
-  unsafeDelegatedMountPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
+  mkDelegatedMountCase =
+    mountName: mount:
+    hm {
+      cloister = {
+        enable = true;
+        sandboxes.dev = {
+          workerBroker.profiles.ephemeral = {
             sandbox = "worker";
             workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
+            delegatedPerDirMounts.${mountName} = mount;
           };
-          availableDelegatedPerDirMounts.worktrees.path = "$(pwd)";
         };
+        sandboxes.worker = { };
       };
-      sandboxes.worker = { };
     };
+
+  unsafeDelegatedMountPath = mkDelegatedMountCase "worktrees" {
+    mode = "rw";
+    path = "$(pwd)";
   };
 
-  relativeDelegatedMountPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees.path = "relative/base";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  relativeDelegatedMountPath = mkDelegatedMountCase "worktrees" {
+    mode = "rw";
+    path = "relative/base";
   };
 
-  traversingDelegatedMountPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees.path = "/safe/base/../escape";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  traversingDelegatedMountPath = mkDelegatedMountCase "worktrees" {
+    mode = "rw";
+    path = "/safe/base/../escape";
   };
 
-  validAbsoluteHomeDelegatedMountPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees.path = "/home/tester/projects/worktrees";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  validAbsoluteHomeDelegatedMountPath = mkDelegatedMountCase "worktrees" {
+    mode = "rw";
+    path = "/home/tester/projects/worktrees";
   };
 
-  traversingDelegatedMountSubPath = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts.worktrees = "rw";
-          };
-          availableDelegatedPerDirMounts.worktrees = {
-            path = "/safe/base";
-            subPath = "../.ssh";
-          };
-        };
-      };
-      sandboxes.worker = { };
-    };
+  traversingDelegatedMountSubPath = mkDelegatedMountCase "worktrees" {
+    mode = "rw";
+    path = "/safe/base";
+    subPath = "../.ssh";
   };
 
-  absoluteAvailableDelegatedMountKey = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts."/etc" = "ro";
-          };
-          availableDelegatedPerDirMounts."/etc".path = "/safe/base";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  absoluteDelegatedMountKey = mkDelegatedMountCase "/etc" {
+    mode = "ro";
+    path = "/safe/base";
   };
 
-  traversingAvailableDelegatedMountKey = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts."../escape" = "ro";
-          };
-          availableDelegatedPerDirMounts."../escape".path = "/safe/base";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  traversingDelegatedMountKey = mkDelegatedMountCase "../escape" {
+    mode = "ro";
+    path = "/safe/base";
   };
 
-  unsafeAvailableDelegatedMountKey = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts."$HOME/escape" = "ro";
-          };
-          availableDelegatedPerDirMounts."$HOME/escape".path = "/safe/base";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  unsafeDelegatedMountKey = mkDelegatedMountCase "$HOME/escape" {
+    mode = "ro";
+    path = "/safe/base";
   };
 
-  newlineReferencedDelegatedMountKey = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-            delegatedPerDirMounts."line\nescape" = "ro";
-          };
-          availableDelegatedPerDirMounts."line\nescape".path = "/safe/base";
-        };
-      };
-      sandboxes.worker = { };
-    };
+  newlineDelegatedMountKey = mkDelegatedMountCase "line\nescape" {
+    mode = "ro";
+    path = "/safe/base";
   };
 
-  aliasCollision = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        registry.aliases.clb-ephemeral = "echo existing";
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
+  mkCollisionCase =
+    attr:
+    hm {
+      cloister = {
+        enable = true;
+        sandboxes.dev = attr // {
+          workerBroker.profiles.ephemeral = {
             sandbox = "worker";
             workspace.mode = "project-overlay";
           };
         };
+        sandboxes.worker = { };
       };
-      sandboxes.worker = { };
     };
+
+  aliasCollision = mkCollisionCase { registry.aliases.clb-ephemeral = "echo existing"; };
+
+  functionCollision = mkCollisionCase {
+    registry.functions.clb-ephemeral = ''
+      echo existing
+    '';
   };
 
-  functionCollision = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        registry.functions.clb-ephemeral = ''
-          echo existing
-        '';
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
-
-  commandCollision = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        registry.commands = [ "clb-ephemeral" ];
-        workerBroker = {
-          enable = true;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
-
-  disabledLauncherCollisionIgnored = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev = {
-        registry.commands = [ "clb-ephemeral" ];
-        workerBroker = {
-          enable = false;
-          spawnableProfiles.ephemeral = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
-        };
-      };
-      sandboxes.worker = { };
-    };
-  };
+  commandCollision = mkCollisionCase { registry.commands = [ "clb-ephemeral" ]; };
 
   crossSandboxGeneratedLauncherCollision = hm {
     cloister = {
       enable = true;
       sandboxes = {
-        dev = {
-          workerBroker = {
-            enable = true;
-            spawnableProfiles.ephemeral = {
-              sandbox = "worker-a";
-              workspace.mode = "project-overlay";
-            };
-          };
+        dev.workerBroker.profiles.ephemeral = {
+          sandbox = "worker-a";
+          workspace.mode = "project-overlay";
         };
-        ops = {
-          workerBroker = {
-            enable = true;
-            spawnableProfiles.ephemeral = {
-              sandbox = "worker-b";
-              workspace.mode = "project-overlay";
-            };
-          };
+        ops.workerBroker.profiles.ephemeral = {
+          sandbox = "worker-b";
+          workspace.mode = "project-overlay";
         };
         worker-a = { };
         worker-b = { };
@@ -329,35 +136,22 @@ let
   unsafeProfileKey = hm {
     cloister = {
       enable = true;
-      sandboxes.dev = {
-        workerBroker = {
-          enable = true;
-          spawnableProfiles."bad/name" = {
-            sandbox = "worker";
-            workspace.mode = "project-overlay";
-          };
-        };
+      sandboxes.dev.workerBroker.profiles."bad/name" = {
+        sandbox = "worker";
+        workspace.mode = "project-overlay";
       };
       sandboxes.worker = { };
     };
   };
 in
 checks.mkCheck "test-cloister-worker-broker" [
-  (checks.expectAssertionMessage "worker broker requires at least one spawnable profile"
-    emptyProfiles.assertions
-    "workerBroker.enable requires at least one workerBroker.spawnableProfiles entry"
-  )
   (checks.expectAssertionMessage "worker broker profiles require an existing sandbox"
     missingSandbox.assertions
-    "workerBroker.spawnableProfiles.ephemeral.sandbox references unknown sandbox 'worker'"
-  )
-  (checks.expectAssertionMessage "worker broker delegated mounts must be declared"
-    missingDelegatedMount.assertions
-    "workerBroker.spawnableProfiles.ephemeral.delegatedPerDirMounts references unknown availableDelegatedPerDirMounts entry '.cache/pre-commit'"
+    "workerBroker.profiles.ephemeral.sandbox references unknown sandbox 'worker'"
   )
   (checks.expectAssertionMessage "worker broker requires bind working directory"
     workerBrokerWithoutBindWorkingDirectory.assertions
-    "workerBroker.enable requires sandbox.bindWorkingDirectory = true"
+    "workerBroker.profiles requires sandbox.bindWorkingDirectory = true"
   )
   (checks.expectAssertionMessage "worker broker delegated mount paths reject unsafe expansions"
     unsafeDelegatedMountPath.assertions
@@ -365,11 +159,11 @@ checks.mkCheck "test-cloister-worker-broker" [
   )
   (checks.expectAssertionMessage "worker broker delegated mount paths must be absolute host paths"
     relativeDelegatedMountPath.assertions
-    "workerBroker.availableDelegatedPerDirMounts.worktrees.path must be an absolute traversal-free host path"
+    "workerBroker.profiles.ephemeral.delegatedPerDirMounts.worktrees.path must be an absolute traversal-free host path"
   )
   (checks.expectAssertionMessage "worker broker delegated mount paths reject traversal"
     traversingDelegatedMountPath.assertions
-    "workerBroker.availableDelegatedPerDirMounts.worktrees.path must be an absolute traversal-free host path"
+    "workerBroker.profiles.ephemeral.delegatedPerDirMounts.worktrees.path must be an absolute traversal-free host path"
   )
   (checks.expectFalse "worker broker delegated mount paths allow valid absolute home paths" (
     builtins.any (assertion: !assertion.assertion) validAbsoluteHomeDelegatedMountPath.assertions
@@ -377,23 +171,22 @@ checks.mkCheck "test-cloister-worker-broker" [
   (checks.expectAssertionMessage
     "worker broker delegated mount subpaths must stay relative descendants"
     traversingDelegatedMountSubPath.assertions
-    "workerBroker.availableDelegatedPerDirMounts.worktrees.subPath must be a relative descendant path without traversal"
+    "workerBroker.profiles.ephemeral.delegatedPerDirMounts.worktrees.subPath must be a relative descendant path without traversal"
   )
-  (checks.expectAssertionMessage
-    "worker broker available delegated mount keys must stay sandbox-relative"
-    absoluteAvailableDelegatedMountKey.assertions
-    "workerBroker availableDelegatedPerDirMounts keys must be sandbox-relative descendant paths"
+  (checks.expectAssertionMessage "worker broker delegated mount keys must stay sandbox-relative"
+    absoluteDelegatedMountKey.assertions
+    "workerBroker delegatedPerDirMounts keys must be sandbox-relative descendant paths"
   )
-  (checks.expectAssertionMessage "worker broker referenced delegated mount keys must reject traversal"
-    traversingAvailableDelegatedMountKey.assertions
-    "workerBroker availableDelegatedPerDirMounts keys must be sandbox-relative descendant paths"
+  (checks.expectAssertionMessage "worker broker delegated mount keys must reject traversal"
+    traversingDelegatedMountKey.assertions
+    "workerBroker delegatedPerDirMounts keys must be sandbox-relative descendant paths"
   )
   (checks.expectAssertionMessage "worker broker delegated mount keys reject variable expansions"
-    unsafeAvailableDelegatedMountKey.assertions
+    unsafeDelegatedMountKey.assertions
     "cannot contain variable expansions ($) or newlines"
   )
   (checks.expectAssertionMessage "worker broker delegated mount keys reject newlines"
-    newlineReferencedDelegatedMountKey.assertions
+    newlineDelegatedMountKey.assertions
     "cannot contain variable expansions ($) or newlines"
   )
   (checks.expectAssertionMessage "worker broker generated launchers cannot collide with aliases"
@@ -408,15 +201,12 @@ checks.mkCheck "test-cloister-worker-broker" [
     commandCollision.assertions
     "generated worker broker launcher names collide with registry.commands: clb-ephemeral"
   )
-  (checks.expectFalse "disabled worker broker ignores generated launcher collisions" (
-    builtins.any (assertion: !assertion.assertion) disabledLauncherCollisionIgnored.assertions
-  ))
   (checks.expectFalse "generated launcher names stay sandbox-local across sandboxes" (
     builtins.any (assertion: !assertion.assertion) crossSandboxGeneratedLauncherCollision.assertions
   ))
   (checks.expectAssertionMessage
     "worker broker profile keys must produce safe generated launcher names"
     unsafeProfileKey.assertions
-    "workerBroker.spawnableProfiles keys must produce safe generated launcher names: bad/name"
+    "workerBroker.profiles keys must produce safe generated launcher names: bad/name"
   )
 ]

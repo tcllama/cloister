@@ -16,7 +16,6 @@ cloister.sandboxes.zoom = {
   audio.pipewire = {
     enable = true;
     filters = {
-      # filters.enable defaults to true when PipeWire audio is enabled.
       audioOut = true;  # speakers (default)
       audioIn = true;   # microphones
       videoIn = true;   # webcams / V4L2

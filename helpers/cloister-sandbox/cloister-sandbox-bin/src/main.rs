@@ -1106,7 +1106,7 @@ pub fn create_parent_broker_session(
     project_root: &str,
     dir_hash: &str,
 ) -> Result<Option<broker::BrokerSession>, String> {
-    if !config.worker_broker.enable {
+    if config.worker_broker.profiles.is_empty() {
         return Ok(None);
     }
 
@@ -1130,9 +1130,9 @@ pub fn create_parent_broker_session(
         token: broker_parent_capability_token(),
         project_root: child_visible_project_root,
         dir_hash: dir_hash.to_string(),
-        spawnable_profiles: config
+        profiles: config
             .worker_broker
-            .spawnable_profiles
+            .profiles
             .iter()
             .map(|(name, profile)| {
                 (
@@ -1141,20 +1141,6 @@ pub fn create_parent_broker_session(
                         sandbox: profile.sandbox.clone(),
                         workspace_mode: profile.workspace.mode,
                         delegated_per_dir_mounts: profile.delegated_per_dir_mounts.clone(),
-                    },
-                )
-            })
-            .collect(),
-        available_delegated_per_dir_mounts: config
-            .worker_broker
-            .available_delegated_per_dir_mounts
-            .iter()
-            .map(|(name, mount)| {
-                (
-                    name.clone(),
-                    broker::BrokerDelegatedPerDirMount {
-                        path: mount.path.clone(),
-                        sub_path: mount.sub_path.clone(),
                     },
                 )
             })
@@ -1500,7 +1486,7 @@ pub fn lookup_child_profile<'a>(
     profile_name: &str,
 ) -> Result<&'a broker::BrokerSpawnableProfile, String> {
     session
-        .spawnable_profiles
+        .profiles
         .get(profile_name)
         .ok_or_else(|| format!("undefined child profile '{profile_name}'"))
 }
@@ -1525,18 +1511,16 @@ pub fn delegated_mount_args(
     project_root: &str,
 ) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
-    for (dest, mode) in &profile.delegated_per_dir_mounts {
-        let mount = session
-            .available_delegated_per_dir_mounts
-            .get(dest)
-            .ok_or_else(|| format!("undefined delegated per-dir mount '{dest}'"))?;
+    for (dest, mount) in &profile.delegated_per_dir_mounts {
         let source = broker::resolve_delegated_per_dir_source(
             &mount.path,
             &session.dir_hash,
             mount.sub_path.as_deref(),
         )?;
         let dest_path = format!("{project_root}/{dest}");
-        args.extend(bwrap::delegated_per_dir_args(&source, &dest_path, *mode));
+        args.extend(bwrap::delegated_per_dir_args(
+            &source, &dest_path, mount.mode,
+        ));
     }
     Ok(args)
 }
@@ -1678,7 +1662,9 @@ fn load_trusted_child_profile(
 }
 
 fn dir_hash_for_launch(config: &SandboxConfig, sandbox_dir: &str) -> String {
-    if !sandbox_dir.is_empty() && (!config.per_dir.is_empty() || config.worker_broker.enable) {
+    if !sandbox_dir.is_empty()
+        && (!config.per_dir.is_empty() || !config.worker_broker.profiles.is_empty())
+    {
         runtime::compute_dir_hash(sandbox_dir)
     } else {
         String::new()
@@ -2745,7 +2731,7 @@ fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
         || config.gui_enable
         || config.pipewire_pulse_config_path.is_some()
         || config.pipewire_socket_name.is_some()
-        || config.worker_broker.enable
+        || !config.worker_broker.profiles.is_empty()
 }
 
 fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
@@ -2883,7 +2869,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use cloister_sandbox_lib::config::DelegatedAccessMode;
+    use cloister_sandbox_lib::config::{DelegatedAccessMode, DelegatedPerDirMount};
 
     /// Serialize tests that touch shared signal statics (CHILD_PID, SIGINT_COUNT, etc.).
     fn signal_lock() -> &'static Mutex<()> {
@@ -2943,15 +2929,29 @@ mod tests {
             token: "token-1".to_string(),
             project_root: "/workspace/project".to_string(),
             dir_hash: "abc123def456".to_string(),
-            spawnable_profiles: BTreeMap::from([
+            profiles: BTreeMap::from([
                 (
                     "overlay".to_string(),
                     broker::BrokerSpawnableProfile {
                         sandbox: "worker".to_string(),
                         workspace_mode: WorkspaceMode::ProjectOverlay,
                         delegated_per_dir_mounts: BTreeMap::from([
-                            ("worktrees".to_string(), DelegatedAccessMode::Rw),
-                            (".cache/pre-commit".to_string(), DelegatedAccessMode::Ro),
+                            (
+                                "worktrees".to_string(),
+                                DelegatedPerDirMount {
+                                    mode: DelegatedAccessMode::Rw,
+                                    path: "/local/worktrees/dev".to_string(),
+                                    sub_path: None,
+                                },
+                            ),
+                            (
+                                ".cache/pre-commit".to_string(),
+                                DelegatedPerDirMount {
+                                    mode: DelegatedAccessMode::Ro,
+                                    path: "/local/ephemeral/dev".to_string(),
+                                    sub_path: Some(".cache/pre-commit".to_string()),
+                                },
+                            ),
                         ]),
                     },
                 ),
@@ -2961,22 +2961,6 @@ mod tests {
                         sandbox: "worker".to_string(),
                         workspace_mode: WorkspaceMode::ProjectRw,
                         delegated_per_dir_mounts: BTreeMap::new(),
-                    },
-                ),
-            ]),
-            available_delegated_per_dir_mounts: BTreeMap::from([
-                (
-                    "worktrees".to_string(),
-                    broker::BrokerDelegatedPerDirMount {
-                        path: "/local/worktrees/dev".to_string(),
-                        sub_path: None,
-                    },
-                ),
-                (
-                    ".cache/pre-commit".to_string(),
-                    broker::BrokerDelegatedPerDirMount {
-                        path: "/local/ephemeral/dev".to_string(),
-                        sub_path: Some(".cache/pre-commit".to_string()),
                     },
                 ),
             ]),
@@ -2999,16 +2983,23 @@ mod tests {
             "copy_file_base": "/home/user/.local/state/cloister",
             "git_path": "/nix/store/xxx-git/bin/git",
             "worker_broker": {
-                "enable": true,
-                "spawnable_profiles": {
+                "profiles": {
                     "overlay": {
                         "sandbox": "worker",
                         "workspace": {
                             "mode": "project-overlay"
                         },
                         "delegated_per_dir_mounts": {
-                            "worktrees": "rw",
-                            ".cache/pre-commit": "ro"
+                            "worktrees": {
+                                "mode": "rw",
+                                "path": "/local/worktrees/dev",
+                                "sub_path": null
+                            },
+                            ".cache/pre-commit": {
+                                "mode": "ro",
+                                "path": "/local/ephemeral/dev",
+                                "sub_path": ".cache/pre-commit"
+                            }
                         }
                     },
                     "project": {
@@ -3026,16 +3017,6 @@ mod tests {
                     "clb-project": {
                         "profile": "project",
                         "sandbox": "worker"
-                    }
-                },
-                "available_delegated_per_dir_mounts": {
-                    "worktrees": {
-                        "path": "/local/worktrees/dev",
-                        "sub_path": null
-                    },
-                    ".cache/pre-commit": {
-                        "path": "/local/ephemeral/dev",
-                        "sub_path": ".cache/pre-commit"
                     }
                 }
             }
@@ -3116,8 +3097,9 @@ mod tests {
             WorkspaceMode::ProjectOverlay
         );
         assert_eq!(
-            session
-                .available_delegated_per_dir_mounts
+            lookup_child_profile(&session, "overlay")
+                .unwrap()
+                .delegated_per_dir_mounts
                 .get(".cache/pre-commit")
                 .and_then(|mount| mount.sub_path.as_deref()),
             Some(".cache/pre-commit")
@@ -3194,12 +3176,7 @@ mod tests {
         assert_eq!(payload_json.as_object().map(|value| value.len()), Some(1));
         assert!(payload_json.get("project_root").is_none());
         assert!(payload_json.get("dir_hash").is_none());
-        assert!(payload_json.get("spawnable_profiles").is_none());
-        assert!(
-            payload_json
-                .get("available_delegated_per_dir_mounts")
-                .is_none()
-        );
+        assert!(payload_json.get("profiles").is_none());
     }
 
     #[test]
@@ -3250,8 +3227,7 @@ mod tests {
             record.get("dir_hash").and_then(|value| value.as_str()),
             Some("abc123def456")
         );
-        assert!(record.get("spawnable_profiles").is_some());
-        assert!(record.get("available_delegated_per_dir_mounts").is_some());
+        assert!(record.get("profiles").is_some());
         assert!(env_args.windows(3).any(|window| {
             window[0] == "--bind"
                 && window[1]
@@ -3294,12 +3270,7 @@ mod tests {
         assert_eq!(payload_json.as_object().map(|value| value.len()), Some(1));
         assert!(payload_json.get("project_root").is_none());
         assert!(payload_json.get("dir_hash").is_none());
-        assert!(payload_json.get("spawnable_profiles").is_none());
-        assert!(
-            payload_json
-                .get("available_delegated_per_dir_mounts")
-                .is_none()
-        );
+        assert!(payload_json.get("profiles").is_none());
 
         let _ = std::fs::remove_dir_all(&host_runtime_dir);
     }

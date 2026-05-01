@@ -253,14 +253,15 @@ let
         ]
       );
 
-      workerBrokerNeedsNestedNamespaces = sCfg.workerBroker.enable;
+      workerBrokerNeedsNestedNamespaces = sCfg.workerBroker.profiles != { };
+      effectiveNetworkEnabled = sCfg.network.enable || sCfg.network.namespace != null;
 
       seccompAllowNestedSandboxNamespaces =
         sCfg.sandbox.seccomp.allowChromiumSandbox || workerBrokerNeedsNestedNamespaces;
 
       # Worker-broker launches can invoke nested bubblewrap, which needs a
       # transient NETLINK_ROUTE socket while bringing up loopback.
-      seccompDenyNetlink = !sCfg.network.enable && !workerBrokerNeedsNestedNamespaces;
+      seccompDenyNetlink = !effectiveNetworkEnabled && !workerBrokerNeedsNestedNamespaces;
 
       seccompFilter = lib.optionalString sCfg.sandbox.seccomp.enable (
         pkgs.runCommand
@@ -319,7 +320,9 @@ let
 
       perDirBuckets = lib.filterAttrs (_: paths: paths != [ ]) sCfg.sandbox.extraBinds.perDir;
       perDirPaths = lib.concatLists (lib.attrValues perDirBuckets);
-      workerBrokerAvailableDelegatedMounts = builtins.attrValues sCfg.workerBroker.availableDelegatedPerDirMounts;
+      workerBrokerDelegatedMounts = lib.concatMap (
+        profile: builtins.attrValues profile.delegatedPerDirMounts
+      ) (builtins.attrValues sCfg.workerBroker.profiles);
 
       dirBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.dir;
       fileBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.file;
@@ -655,14 +658,12 @@ let
             ++ map (bind: toString bind.src) sCfg.sandbox.extraBinds.managedFileBind
             ++ map (bind: bind.dest) sCfg.sandbox.extraBinds.managedFileBind;
           copyFileSrcPaths = map (cf: cf.src) sCfg.sandbox.copyFiles;
-          workerBrokerKeyPaths =
-            lib.attrNames sCfg.workerBroker.availableDelegatedPerDirMounts
-            ++ lib.concatMap (profile: lib.attrNames profile.delegatedPerDirMounts) (
-              builtins.attrValues sCfg.workerBroker.spawnableProfiles
-            );
+          workerBrokerKeyPaths = lib.concatMap (profile: lib.attrNames profile.delegatedPerDirMounts) (
+            builtins.attrValues sCfg.workerBroker.profiles
+          );
           workerBrokerPaths = lib.concatMap (
             mount: [ mount.path ] ++ lib.optional (mount.subPath != null) mount.subPath
-          ) workerBrokerAvailableDelegatedMounts;
+          ) workerBrokerDelegatedMounts;
         in
         bindPaths
         ++ dirPaths
@@ -734,21 +735,19 @@ let
       };
 
       renderedWorkerBroker = {
-        inherit (sCfg.workerBroker) enable;
-        spawnable_profiles = lib.mapAttrs (_: profile: {
+        profiles = lib.mapAttrs (_: profile: {
           inherit (profile) sandbox;
           workspace = {
             inherit (profile.workspace) mode;
           };
-          delegated_per_dir_mounts = profile.delegatedPerDirMounts;
-        }) sCfg.workerBroker.spawnableProfiles;
+          delegated_per_dir_mounts = lib.mapAttrs (_: mount: {
+            inherit (mount) mode path;
+            sub_path = mount.subPath;
+          }) profile.delegatedPerDirMounts;
+        }) sCfg.workerBroker.profiles;
         generated_launchers = lib.mapAttrs (_: launcher: {
           inherit (launcher) profile sandbox;
         }) sCfg.workerBroker.generatedLaunchers;
-        available_delegated_per_dir_mounts = lib.mapAttrs (_: mount: {
-          inherit (mount) path;
-          sub_path = mount.subPath;
-        }) sCfg.workerBroker.availableDelegatedPerDirMounts;
       };
 
       # --- Compiled binary: JSON config and makeWrapper package ---
@@ -920,9 +919,7 @@ in
 
     systemd =
       let
-        pipewireFilteredSandboxes = lib.filterAttrs (
-          _: sCfg: sCfg.audio.pipewire.enable && sCfg.audio.pipewire.filters.enable
-        ) cfg.sandboxes;
+        pipewireFilteredSandboxes = lib.filterAttrs (_: sCfg: sCfg.audio.pipewire.enable) cfg.sandboxes;
       in
       {
         user = {
@@ -937,9 +934,7 @@ in
 
     xdg.configFile =
       let
-        pipewireEnabledSandboxes = lib.filterAttrs (
-          _: sCfg: sCfg.audio.pipewire.enable && sCfg.audio.pipewire.filters.enable
-        ) cfg.sandboxes;
+        pipewireEnabledSandboxes = lib.filterAttrs (_: sCfg: sCfg.audio.pipewire.enable) cfg.sandboxes;
 
         getNodePerms = filters: "rxl" + lib.optionalString filters.control "w";
         getObjectPerms =

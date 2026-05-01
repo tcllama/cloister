@@ -847,11 +847,11 @@ let
   expectedNsNotFound = lib.filter (
     ns: !builtins.elem ns effectiveAllowedNamespaces
   ) cfg.expectedNamespaces;
+
+  enabled = cfg.networks != { };
 in
 {
   options.cloister-netns = {
-    enable = lib.mkEnableOption "capability wrapper for cloister-netns (cloister network namespace helper)";
-
     networks = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule networkSubmodule);
       default = { };
@@ -950,16 +950,8 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf enabled {
     assertions = [
-      {
-        assertion = builtins.length effectiveAllowedNamespaces > 0;
-        message = ''
-          cloister-netns is enabled but no namespaces are configured.
-          Define networks. For example:
-            cloister-netns.networks.vpn.wireguard = { ... };
-        '';
-      }
       {
         assertion = expectedNsNotFound == [ ];
         message = "cloister-netns: expectedNamespaces contains names not in networks: ${lib.concatStringsSep ", " expectedNsNotFound}";

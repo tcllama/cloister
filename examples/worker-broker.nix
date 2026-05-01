@@ -23,8 +23,7 @@ lib.recursiveUpdate base {
       };
 
       workerBroker = {
-        enable = true;
-        spawnableProfiles = {
+        profiles = {
           overlay = {
             sandbox = "worker-overlay";
             workspace.mode = "project-overlay";

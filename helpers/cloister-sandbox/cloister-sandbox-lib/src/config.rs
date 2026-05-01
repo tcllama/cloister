@@ -145,13 +145,9 @@ pub struct SandboxConfig {
 #[serde(deny_unknown_fields)]
 pub struct WorkerBrokerConfig {
     #[serde(default)]
-    pub enable: bool,
-    #[serde(default)]
-    pub spawnable_profiles: BTreeMap<String, SpawnableProfile>,
+    pub profiles: BTreeMap<String, SpawnableProfile>,
     #[serde(default)]
     pub generated_launchers: BTreeMap<String, GeneratedLauncher>,
-    #[serde(default)]
-    pub available_delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,7 +163,7 @@ pub struct SpawnableProfile {
     pub sandbox: String,
     pub workspace: WorkspaceConfig,
     #[serde(default)]
-    pub delegated_per_dir_mounts: BTreeMap<String, DelegatedAccessMode>,
+    pub delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,9 +186,10 @@ pub enum DelegatedAccessMode {
     Rw,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DelegatedPerDirMount {
+    pub mode: DelegatedAccessMode,
     pub path: String,
     #[serde(default)]
     pub sub_path: Option<String>,
@@ -308,8 +305,8 @@ impl SandboxConfig {
                 "flatpak_app_id must not be empty when portal integration is enabled".into(),
             );
         }
-        if self.worker_broker.enable && !self.bind_working_directory {
-            return Err("worker_broker.enable requires bind_working_directory = true".into());
+        if !self.worker_broker.profiles.is_empty() && !self.bind_working_directory {
+            return Err("worker_broker.profiles requires bind_working_directory = true".into());
         }
         if self.store_mode == StoreMode::ImageStore {
             if self.store_id.as_deref().unwrap_or("").is_empty() {
@@ -502,15 +499,18 @@ mod tests {
             "copy_file_base": "/state/cloister",
             "git_path": "/nix/store/xxx/bin/git",
             "worker_broker": {
-                "enable": true,
-                "spawnable_profiles": {
+                "profiles": {
                     "ephemeral": {
                         "sandbox": "worker",
                         "workspace": {
                             "mode": "project-overlay"
                         },
                         "delegated_per_dir_mounts": {
-                            ".cache/pre-commit": "ro"
+                            ".cache/pre-commit": {
+                                "mode": "ro",
+                                "path": "/local/ephemeral/dev",
+                                "sub_path": ".cache/pre-commit"
+                            }
                         }
                     }
                 },
@@ -518,12 +518,6 @@ mod tests {
                     "clb-ephemeral": {
                         "profile": "ephemeral",
                         "sandbox": "worker"
-                    }
-                },
-                "available_delegated_per_dir_mounts": {
-                    "worktrees": {
-                        "path": "/local/worktrees/dev",
-                        "sub_path": null
                     }
                 }
             }
@@ -533,30 +527,29 @@ mod tests {
         let config: SandboxConfig = serde_json::from_str(&json).unwrap();
         let worker_broker = &config.worker_broker;
         let profile = worker_broker
-            .spawnable_profiles
+            .profiles
             .get("ephemeral")
             .expect("ephemeral profile");
         let generated_launcher = worker_broker
             .generated_launchers
             .get("clb-ephemeral")
             .expect("generated launcher");
-        let available_mount = worker_broker
-            .available_delegated_per_dir_mounts
-            .get("worktrees")
-            .expect("available mount");
-
         assert_eq!(config.name, "dev");
-        assert!(worker_broker.enable);
+        assert!(!worker_broker.profiles.is_empty());
         assert_eq!(profile.sandbox, "worker");
         assert_eq!(profile.workspace.mode, WorkspaceMode::ProjectOverlay);
         assert_eq!(generated_launcher.profile, "ephemeral");
         assert_eq!(generated_launcher.sandbox, "worker");
+        let delegated_mount = profile
+            .delegated_per_dir_mounts
+            .get(".cache/pre-commit")
+            .expect("delegated mount");
+        assert_eq!(delegated_mount.mode, DelegatedAccessMode::Ro);
+        assert_eq!(delegated_mount.path, "/local/ephemeral/dev");
         assert_eq!(
-            profile.delegated_per_dir_mounts.get(".cache/pre-commit"),
-            Some(&DelegatedAccessMode::Ro)
+            delegated_mount.sub_path.as_deref(),
+            Some(".cache/pre-commit")
         );
-        assert_eq!(available_mount.path, "/local/worktrees/dev");
-        assert_eq!(available_mount.sub_path.as_deref(), None);
     }
 
     #[test]
@@ -575,8 +568,7 @@ mod tests {
             "copy_file_base": "/state/cloister",
             "git_path": "/nix/store/xxx/bin/git",
             "worker_broker": {
-                "enable": true,
-                "spawnable_profiles": {
+                "profiles": {
                     "ephemeral": {
                         "sandbox": "worker",
                         "workspace": {
@@ -590,7 +582,7 @@ mod tests {
 
         let config: SandboxConfig = serde_json::from_str(&json).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.contains("worker_broker.enable requires bind_working_directory"));
+        assert!(err.contains("worker_broker.profiles requires bind_working_directory"));
     }
 
     #[test]

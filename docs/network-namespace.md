@@ -193,9 +193,8 @@ cloister-netns.networks.vpn = {
 
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
-| `cloister-netns.enable` | bool | `false` | Install the `cloister-netns` capability wrapper |
 | `cloister-netns.group` | str | `"cloister-netns"` | Unix group allowed to execute the helper |
-| `cloister-netns.networks` | attrsOf submodule | `{}` | Declarative namespace definitions included in the helper allowlist |
+| `cloister-netns.networks` | attrsOf submodule | `{}` | Declarative namespace definitions included in the helper allowlist; non-empty networks install the helper and services |
 | `cloister-netns.addressPools.localhost` | str | `"172.30.0.0/16"` | CIDR pool used for localhost veth auto-assignment |
 | `cloister-netns.addressPools.lan` | str | `"172.29.0.0/16"` | CIDR pool used for LAN veth auto-assignment |
 | `cloister-netns.firewall.autoOpenLocalhostPorts` | bool | `true` | Auto-open host firewall ports for localhost namespaces on `veth-<name>` |

@@ -24,7 +24,6 @@
     audio.pipewire = {
       enable = true;
       filters = {
-        enable = true;
         audioIn = true; # microphone for voice chat
         videoIn = true; # camera for video calls
       };

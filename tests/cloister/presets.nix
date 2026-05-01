@@ -45,7 +45,6 @@ let
         chromium = {
           preset = "chromium";
           audio.pipewire.pulseOnly = false;
-          audio.pipewire.filters.enable = true;
           sandbox.seccomp.allowChromiumSandbox = false;
         };
       };
@@ -67,7 +66,7 @@ checks.mkCheck "test-cloister-presets" [
   (checks.expectFalse "hardened disables network" sandboxes.hard.network.enable)
   (checks.expectFalse "hardened disables ssh" sandboxes.hard.ssh.enable)
   (checks.expectFalse "hardened disables dbus" sandboxes.hard.dbus.enable)
-  (checks.expectTrue "hardened pipewire opt-in enables filters" sandboxes.hardAudio.audio.pipewire.filters.enable)
+  (checks.expectTrue "hardened pipewire opt-in enables filtered audio" sandboxes.hardAudio.audio.pipewire.enable)
   (checks.expectTrue "developer enables git" sandboxes.dev.git.enable)
   (checks.expectTrue "developer enables notifications default" sandboxes.dev.dbus.notifications)
   (checks.expectTrue "developer enables ssh" sandboxes.dev.ssh.enable)

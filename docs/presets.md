@@ -56,7 +56,7 @@ Browser-oriented preset for Chromium and similar apps.
 - enables the `gui` baseline
 - enables PipeWire
 - enables `audio.pipewire.pulseOnly = true`
-- enables `audio.pipewire.filters.enable = true`
+- enables filtered PipeWire audio with `audio.pipewire.enable = true`
 - enables `sandbox.seccomp.allowChromiumSandbox = true`
 
 ```nix

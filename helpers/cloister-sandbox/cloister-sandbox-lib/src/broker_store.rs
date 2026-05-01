@@ -169,8 +169,7 @@ mod tests {
             token: token.to_string(),
             project_root: "/workspace/project".to_string(),
             dir_hash: "abc123def456".to_string(),
-            spawnable_profiles: BTreeMap::new(),
-            available_delegated_per_dir_mounts: BTreeMap::new(),
+            profiles: BTreeMap::new(),
         }
     }
 

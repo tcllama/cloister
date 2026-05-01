@@ -32,7 +32,6 @@ let
 
   eval = nixos.netns {
     cloister-netns = {
-      enable = true;
       expectedNamespaces = [
         "dev"
         "lan"
@@ -46,19 +45,13 @@ let
 
   missingNamespace = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.isolated = true;
       expectedNamespaces = [ "missing" ];
     };
   };
 
-  noNamespaces = nixos.netns {
-    cloister-netns.enable = true;
-  };
-
   customGroup = nixos.netns {
     cloister-netns = {
-      enable = true;
       group = "sandboxers";
       networks.vpn.isolated = true;
     };
@@ -66,7 +59,6 @@ let
 
   invalidLocalhostPool = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.isolated = true;
       addressPools.localhost = "bad";
     };
@@ -74,7 +66,6 @@ let
 
   localhostPoolExhausted = nixos.netns {
     cloister-netns = {
-      enable = true;
       addressPools.localhost = "172.30.0.0/30";
       networks = {
         a.localhost = { };
@@ -85,21 +76,18 @@ let
 
   invalidLanRange = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.lan.lan.allowedRanges = [ "not-a-cidr" ];
     };
   };
 
   ifnameTooLong = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.abcdefghijkl.localhost = { };
     };
   };
 
   isolatedNoDns = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.offline = {
         isolated = true;
         dns.nameservers = [ "1.1.1.1" ];
@@ -109,7 +97,6 @@ let
 
   multipleTypes = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.mixed = {
         isolated = true;
         localhost = { };
@@ -119,7 +106,6 @@ let
 
   wgInvalidAddress = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.wireguard = {
         privateKeyFile = pkgs.writeText "wg-private-key" "private";
         address = [ "bad-address" ];
@@ -135,7 +121,6 @@ let
 
   lanPoolExhausted = nixos.netns {
     cloister-netns = {
-      enable = true;
       addressPools.lan = "172.29.0.0/30";
       networks = {
         alpha.lan = { };
@@ -146,7 +131,6 @@ let
 
   invalidLanPool = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.isolated = true;
       addressPools.lan = "bad";
     };
@@ -154,7 +138,6 @@ let
 
   invalidLocalhostPoolPrefix = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.isolated = true;
       addressPools.localhost = "172.30.0.0/31";
     };
@@ -162,7 +145,6 @@ let
 
   orderedPairsEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks = {
         zeta.localhost = { };
         alpha.localhost = { };
@@ -183,7 +165,6 @@ let
 
   fileBackedInputsEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       firewall.autoOpenLocalhostPorts = false;
       enforceExecAllowlist = false;
       allowedExecPaths = [
@@ -213,14 +194,12 @@ let
 
   isolatedEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.offline.isolated = true;
     };
   };
 
   wgAutoHostnameEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn = {
         wireguard = {
           privateKeyFile = pkgs.writeText "wg-private-key-auto-host" "private\n";
@@ -238,7 +217,6 @@ let
 
   wgAutoIpEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn = {
         wireguard = {
           privateKeyFile = pkgs.writeText "wg-private-key-auto-ip" "private\n";
@@ -256,7 +234,6 @@ let
 
   wgForcedWaitEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       startup.waitForNetworkOnline = true;
       networks.vpn = {
         wireguard = {
@@ -275,7 +252,6 @@ let
 
   wgForcedNoWaitEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       startup.waitForNetworkOnline = false;
       networks.vpn = {
         wireguard = {
@@ -294,7 +270,6 @@ let
 
   duplicateAddressEval = nixos.netns {
     cloister-netns = {
-      enable = true;
       addressPools.localhost = "172.30.0.0/30";
       addressPools.lan = "172.30.0.0/30";
       networks = {
@@ -306,7 +281,6 @@ let
 
   dnsConflict = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn = {
         wireguard = {
           privateKeyFile = pkgs.writeText "wg-private-key-dns-conflict" "private\n";
@@ -328,7 +302,6 @@ let
 
   wgAddressConflict = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.wireguard = {
         privateKeyFile = pkgs.writeText "wg-private-key-address-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
@@ -345,7 +318,6 @@ let
 
   peerKeyConflict = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.wireguard = {
         privateKeyFile = pkgs.writeText "wg-private-key-peer-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
@@ -362,7 +334,6 @@ let
 
   peerEndpointConflict = nixos.netns {
     cloister-netns = {
-      enable = true;
       networks.vpn.wireguard = {
         privateKeyFile = pkgs.writeText "wg-private-key-endpoint-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
@@ -515,9 +486,6 @@ checks.mkCheck "test-cloister-netns" [
   )
   (checks.expectAssertionMessage "expected namespace mismatch fails" missingNamespace.assertions
     "expectedNamespaces contains names not in networks"
-  )
-  (checks.expectAssertionMessage "enable requires namespaces" noNamespaces.assertions
-    "cloister-netns is enabled but no namespaces are configured"
   )
   (checks.expectAssertionMessage "invalid localhost pool is rejected" invalidLocalhostPool.assertions
     "addressPools.localhost must be valid IPv4 CIDR notation"

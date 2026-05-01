@@ -38,7 +38,6 @@ cloister.sandboxes.browser = {
   audio.pipewire = {
     enable = true;
     pulseOnly = true;
-    filters.enable = true;
   };
 };
 ```

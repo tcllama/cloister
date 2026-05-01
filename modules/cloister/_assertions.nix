@@ -28,64 +28,56 @@ let
     path != ""
     && lib.hasPrefix "/" path
     && !(builtins.any (segment: segment == "..") (lib.splitString "/" path));
-  invalidAvailableDelegatedMountKeys = builtins.filter (
-    mountName: !isRelativeDescendantPath mountName
-  ) (lib.attrNames workerBrokerCfg.availableDelegatedPerDirMounts);
+  workerBrokerEnabled = workerBrokerCfg.profiles != { };
+  profileDelegatedMounts = lib.concatMapAttrs (
+    profileName: profile:
+    lib.mapAttrs' (
+      mountName: mount:
+      lib.nameValuePair "${profileName}:${mountName}" {
+        inherit profileName mountName mount;
+      }
+    ) profile.delegatedPerDirMounts
+  ) workerBrokerCfg.profiles;
   invalidReferencedDelegatedMountKeys = lib.filterAttrs (
     _: profile:
     builtins.any (mountName: !isRelativeDescendantPath mountName) (
       lib.attrNames profile.delegatedPerDirMounts
     )
-  ) workerBrokerCfg.spawnableProfiles;
+  ) workerBrokerCfg.profiles;
   invalidSpawnableProfiles = lib.filterAttrs (
     _: profile: !(builtins.elem profile.sandbox sandboxNames)
-  ) workerBrokerCfg.spawnableProfiles;
-  invalidDelegatedMountProfiles = lib.filterAttrs (
-    _: profile:
-    builtins.any (
-      mountName: !(builtins.hasAttr mountName workerBrokerCfg.availableDelegatedPerDirMounts)
-    ) (lib.attrNames profile.delegatedPerDirMounts)
-  ) workerBrokerCfg.spawnableProfiles;
+  ) workerBrokerCfg.profiles;
   invalidSpawnableProfileMessages = lib.concatMapStringsSep "; " (
     profileName:
     let
       profile = invalidSpawnableProfiles.${profileName};
     in
-    "workerBroker.spawnableProfiles.${profileName}.sandbox references unknown sandbox '${profile.sandbox}'"
+    "workerBroker.profiles.${profileName}.sandbox references unknown sandbox '${profile.sandbox}'"
   ) (lib.attrNames invalidSpawnableProfiles);
-  invalidDelegatedMountMessages = lib.concatMapStringsSep "; " (
-    profileName:
-    let
-      profile = workerBrokerCfg.spawnableProfiles.${profileName};
-      invalidMounts = builtins.filter (
-        mountName: !(builtins.hasAttr mountName workerBrokerCfg.availableDelegatedPerDirMounts)
-      ) (lib.attrNames profile.delegatedPerDirMounts);
-    in
-    lib.concatMapStringsSep "; " (
-      mountName:
-      "workerBroker.spawnableProfiles.${profileName}.delegatedPerDirMounts references unknown availableDelegatedPerDirMounts entry '${mountName}'"
-    ) invalidMounts
-  ) (lib.attrNames invalidDelegatedMountProfiles);
   invalidDelegatedMountSubPaths = lib.filterAttrs (
-    _: mount:
-    mount.subPath != null
+    _: entry:
+    entry.mount.subPath != null
     && (
-      mount.subPath == ""
-      || lib.hasPrefix "/" mount.subPath
-      || normalizeCopyDest mount.subPath != mount.subPath
+      entry.mount.subPath == ""
+      || lib.hasPrefix "/" entry.mount.subPath
+      || normalizeCopyDest entry.mount.subPath != entry.mount.subPath
     )
-  ) workerBrokerCfg.availableDelegatedPerDirMounts;
+  ) profileDelegatedMounts;
   invalidDelegatedMountBasePaths = lib.filterAttrs (
-    _: mount: !isAbsoluteTraversalFreeHostPath mount.path
-  ) workerBrokerCfg.availableDelegatedPerDirMounts;
-  invalidDelegatedMountSubPathMessages = lib.concatMapStringsSep "; " (
-    mountName:
-    "workerBroker.availableDelegatedPerDirMounts.${mountName}.subPath must be a relative descendant path without traversal"
-  ) (lib.attrNames invalidDelegatedMountSubPaths);
-  invalidDelegatedMountBasePathMessages = lib.concatMapStringsSep "; " (
-    mountName:
-    "workerBroker.availableDelegatedPerDirMounts.${mountName}.path must be an absolute traversal-free host path"
-  ) (lib.attrNames invalidDelegatedMountBasePaths);
+    _: entry: !isAbsoluteTraversalFreeHostPath entry.mount.path
+  ) profileDelegatedMounts;
+  invalidDelegatedMountSubPathMessages = lib.concatStringsSep "; " (
+    lib.mapAttrsToList (
+      _: entry:
+      "workerBroker.profiles.${entry.profileName}.delegatedPerDirMounts.${entry.mountName}.subPath must be a relative descendant path without traversal"
+    ) invalidDelegatedMountSubPaths
+  );
+  invalidDelegatedMountBasePathMessages = lib.concatStringsSep "; " (
+    lib.mapAttrsToList (
+      _: entry:
+      "workerBroker.profiles.${entry.profileName}.delegatedPerDirMounts.${entry.mountName}.path must be an absolute traversal-free host path"
+    ) invalidDelegatedMountBasePaths
+  );
   inherit (workerBrokerCfg) invalidGeneratedLauncherNames;
   generatedLauncherNames = lib.attrNames workerBrokerCfg.generatedLaunchers;
   generatedLauncherAliasCollisions = lib.intersectLists generatedLauncherNames (
@@ -96,9 +88,9 @@ let
   );
   generatedLauncherCommandCollisions = lib.intersectLists generatedLauncherNames sCfg.registry.commands;
   invalidDelegatedMountKeyMessages = lib.concatStringsSep "; " (
-    map (
-      _: "workerBroker availableDelegatedPerDirMounts keys must be sandbox-relative descendant paths"
-    ) (invalidAvailableDelegatedMountKeys ++ lib.attrNames invalidReferencedDelegatedMountKeys)
+    map (_: "workerBroker delegatedPerDirMounts keys must be sandbox-relative descendant paths") (
+      lib.attrNames invalidReferencedDelegatedMountKeys
+    )
   );
 in
 [
@@ -192,23 +184,15 @@ in
     message = "cloister.sandboxes.${name}: gui.desktopEntry requires gui.enable = true.";
   }
   {
-    assertion = !workerBrokerCfg.enable || workerBrokerCfg.spawnableProfiles != { };
-    message = "cloister.sandboxes.${name}: workerBroker.enable requires at least one workerBroker.spawnableProfiles entry.";
-  }
-  {
-    assertion = !workerBrokerCfg.enable || sCfg.sandbox.bindWorkingDirectory;
-    message = "cloister.sandboxes.${name}: workerBroker.enable requires sandbox.bindWorkingDirectory = true.";
+    assertion = !workerBrokerEnabled || sCfg.sandbox.bindWorkingDirectory;
+    message = "cloister.sandboxes.${name}: workerBroker.profiles requires sandbox.bindWorkingDirectory = true.";
   }
   {
     assertion = invalidSpawnableProfiles == { };
     message = "cloister.sandboxes.${name}: ${invalidSpawnableProfileMessages}.";
   }
   {
-    assertion = invalidDelegatedMountProfiles == { };
-    message = "cloister.sandboxes.${name}: ${invalidDelegatedMountMessages}.";
-  }
-  {
-    assertion = invalidAvailableDelegatedMountKeys == [ ] && invalidReferencedDelegatedMountKeys == { };
+    assertion = invalidReferencedDelegatedMountKeys == { };
     message = "cloister.sandboxes.${name}: ${invalidDelegatedMountKeyMessages}.";
   }
   {
@@ -221,7 +205,7 @@ in
   }
   {
     assertion = invalidGeneratedLauncherNames == [ ];
-    message = "cloister.sandboxes.${name}: workerBroker.spawnableProfiles keys must produce safe generated launcher names: ${
+    message = "cloister.sandboxes.${name}: workerBroker.profiles keys must produce safe generated launcher names: ${
       lib.concatStringsSep ", " (
         map (launcherName: lib.removePrefix "clb-" launcherName) invalidGeneratedLauncherNames
       )
@@ -279,16 +263,8 @@ in
     }
   )
   {
-    assertion = sCfg.network.namespace == null || sCfg.network.enable;
-    message = "cloister.sandboxes.${name}: network.namespace requires network.enable = true so bubblewrap preserves the joined network namespace.";
-  }
-  {
     assertion = !sCfg.audio.pipewire.pulseOnly || sCfg.audio.pipewire.enable;
     message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly requires audio.pipewire.enable = true so Cloister can create the filtered PipeWire backend socket used by the PulseAudio proxy.";
-  }
-  {
-    assertion = !sCfg.audio.pipewire.enable || sCfg.audio.pipewire.filters.enable;
-    message = "cloister.sandboxes.${name}: audio.pipewire.enable requires audio.pipewire.filters.enable = true because unfiltered PipeWire socket forwarding is not supported.";
   }
   {
     assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pipewire.filters.videoIn);

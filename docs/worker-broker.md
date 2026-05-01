@@ -14,7 +14,7 @@ The parent sandbox gets an opaque capability token in env, while authoritative l
 
 Worker broker also requires `XDG_RUNTIME_DIR` so the parent launch can register its trusted session record on the host.
 
-When `workerBroker.enable = true`, Cloister adds one launcher per spawnable profile to the parent sandbox `PATH`: `clb-<profile>`.
+When `workerBroker.profiles` is non-empty, Cloister adds one launcher per profile to the parent sandbox `PATH`: `clb-<profile>`.
 Those launchers are available by plain name inside the parent sandbox, so run them as:
 
 ```sh
@@ -29,7 +29,7 @@ The launcher selects the configured child sandbox and passes the command argv di
 - parent launchers may also have host-authored broker profile and delegated mount metadata from rendered config
 - child launches re-load policy from a trusted mounted session record
 - child launches must stay within the same project identity
-- delegated mounts come only from host-authored `availableDelegatedPerDirMounts`
+- delegated mounts come only from host-authored profile metadata
 - session-record cleanup is attempted on normal parent exit
 
 Crash-leftover session records are not yet pruned automatically.
@@ -42,28 +42,24 @@ cloister.sandboxes = {
     preset = "dev";
     sandbox.bindWorkingDirectory = true;
 
-    workerBroker = {
-      enable = true;
-
-      spawnableProfiles.project = {
+    workerBroker.profiles = {
+      project = {
         sandbox = "worker";
         workspace.mode = "project-rw";
       };
 
-      spawnableProfiles.overlay = {
+      overlay = {
         sandbox = "worker";
         workspace.mode = "project-overlay";
-        delegatedPerDirMounts.worktrees = "rw";
-        delegatedPerDirMounts.".cache/pre-commit" = "ro";
-      };
-
-      availableDelegatedPerDirMounts.worktrees = {
-        path = "/local/worktrees/dev";
-      };
-
-      availableDelegatedPerDirMounts.".cache/pre-commit" = {
-        path = "/local/ephemeral/dev";
-        subPath = ".cache/pre-commit";
+        delegatedPerDirMounts.worktrees = {
+          mode = "rw";
+          path = "/local/worktrees/dev";
+        };
+        delegatedPerDirMounts.".cache/pre-commit" = {
+          mode = "ro";
+          path = "/local/ephemeral/dev";
+          subPath = ".cache/pre-commit";
+        };
       };
     };
   };
@@ -89,14 +85,22 @@ This is useful for nested automation that should inspect and modify files tempor
 
 ## Delegated Per-Directory Mounts
 
-`delegatedPerDirMounts` lets a spawnable profile opt into specific extra paths under the project root.
+`delegatedPerDirMounts` lets a profile opt into specific extra paths under the project root. Each entry is keyed by the sandbox-relative destination path and declares the host base path, optional subpath, and `ro`/`rw` mode.
 
 Example:
 
-- `worktrees = "rw"` can expose a writable worktree area
-- `".cache/pre-commit" = "ro"` can expose a shared read-only cache
+```nix
+delegatedPerDirMounts.worktrees = {
+  mode = "rw";
+  path = "/local/worktrees/dev";
+};
 
-The profile can only request delegated mounts that were declared in `availableDelegatedPerDirMounts`.
+delegatedPerDirMounts.".cache/pre-commit" = {
+  mode = "ro";
+  path = "/local/ephemeral/dev";
+  subPath = ".cache/pre-commit";
+};
+```
 
 ## Manual Test Flow
 

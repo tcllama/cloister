@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::{DelegatedAccessMode, WorkspaceMode};
+use crate::config::{DelegatedPerDirMount, WorkspaceMode};
 use crate::runtime;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -9,8 +9,7 @@ pub struct BrokerSession {
     pub token: String,
     pub project_root: String,
     pub dir_hash: String,
-    pub spawnable_profiles: BTreeMap<String, BrokerSpawnableProfile>,
-    pub available_delegated_per_dir_mounts: BTreeMap<String, BrokerDelegatedPerDirMount>,
+    pub profiles: BTreeMap<String, BrokerSpawnableProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -23,13 +22,7 @@ pub struct BrokerParentCapability {
 pub struct BrokerSpawnableProfile {
     pub sandbox: String,
     pub workspace_mode: WorkspaceMode,
-    pub delegated_per_dir_mounts: BTreeMap<String, DelegatedAccessMode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct BrokerDelegatedPerDirMount {
-    pub path: String,
-    pub sub_path: Option<String>,
+    pub delegated_per_dir_mounts: BTreeMap<String, DelegatedPerDirMount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -318,8 +311,7 @@ mod tests {
             token: "token-1".to_string(),
             project_root: "/workspace/project-a".to_string(),
             dir_hash: "abc123def456".to_string(),
-            spawnable_profiles: BTreeMap::new(),
-            available_delegated_per_dir_mounts: BTreeMap::new(),
+            profiles: BTreeMap::new(),
         };
 
         let err = validate_project_binding(&session, "/workspace/project-b").unwrap_err();
@@ -335,8 +327,7 @@ mod tests {
             token: "token-1".to_string(),
             project_root: "/workspace/project".to_string(),
             dir_hash: "abc123def456".to_string(),
-            spawnable_profiles: BTreeMap::new(),
-            available_delegated_per_dir_mounts: BTreeMap::new(),
+            profiles: BTreeMap::new(),
         };
 
         validate_project_binding(&session, "/workspace/project/./").unwrap();

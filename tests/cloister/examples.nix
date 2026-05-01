@@ -99,9 +99,9 @@ checks.mkCheck "test-cloister-examples" [
   (checks.expectEq "chromium example wraps chromium" [
     "chromium"
   ] chromium.config.cloister.sandboxes.chromium.registry.commands)
-  (checks.expectEq "worker broker example enables broker" true
-    workerBroker.config.cloister.sandboxes.dev.workerBroker.enable
-  )
+  (checks.expectTrue "worker broker example enables broker" (
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.profiles != { }
+  ))
   (checks.expectEq "worker broker example enables dbus for dev" true
     workerBroker.config.cloister.sandboxes.dev.dbus.enable
   )
@@ -109,16 +109,16 @@ checks.mkCheck "test-cloister-examples" [
     workerBroker.config.cloister.sandboxes.dev.dbus.notifications
   )
   (checks.expectEq "worker broker example maps overlay profile to overlay worker" "worker-overlay"
-    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.overlay.sandbox
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.profiles.overlay.sandbox
   )
   (checks.expectEq "worker broker example uses overlay workspace mode" "project-overlay"
-    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.overlay.workspace.mode
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.profiles.overlay.workspace.mode
   )
   (checks.expectEq "worker broker example maps rw profile to rw worker" "worker-rw"
-    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.rw.sandbox
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.profiles.rw.sandbox
   )
   (checks.expectEq "worker broker example uses rw workspace mode" "project-rw"
-    workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.rw.workspace.mode
+    workerBroker.config.cloister.sandboxes.dev.workerBroker.profiles.rw.workspace.mode
   )
   (checks.expectContains "worker broker example preserves fd from developer base" "fd" (
     builtins.toJSON (packageNames workerBroker.config.cloister.sandboxes.dev.extraPackages)

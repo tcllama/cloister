@@ -27,7 +27,6 @@ pkgs.testers.runNixOSTest (_: {
       };
 
       cloister-netns = {
-        enable = true;
         enforceExecAllowlist = true;
         allowedExecPaths = [
           "${pkgs.curl}/bin/curl"

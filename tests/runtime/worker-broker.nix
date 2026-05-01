@@ -91,8 +91,7 @@ let
           }
         ];
         workerBroker = {
-          enable = true;
-          spawnableProfiles = {
+          profiles = {
             local = {
               sandbox = "dev";
               workspace.mode = "project-rw";
@@ -140,10 +139,7 @@ pkgs.testers.runNixOSTest (_: {
         extraGroups = [ "cloister-netns" ];
       };
 
-      cloister-netns = {
-        enable = true;
-        networks.dev.localhost.allowedPorts = [ 4001 ];
-      };
+      cloister-netns.networks.dev.localhost.allowedPorts = [ 4001 ];
 
       systemd.services.localhost-http = {
         description = "HTTP server for worker broker netns runtime test";
@@ -278,7 +274,7 @@ pkgs.testers.runNixOSTest (_: {
     forged_payload_output = assert_failure(
         machine,
         tester_shell
-        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\",\"project_root\":\"${projectDir}\",\"dir_hash\":\"forged\",\"spawnable_profiles\":{},\"available_delegated_per_dir_mounts\":{}}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write'",
+        + "'cd ${projectDir} && env CLOISTER_BROKER_CHILD_PROFILE=project CLOISTER_BROKER_PARENT_CAPABILITY='\"'\"'{\"token\":\"forged-token\",\"project_root\":\"${projectDir}\",\"dir_hash\":\"forged\",\"profiles\":{}}'\"'\"' ${workerPackage}/bin/cl-worker -c ${fixture}/bin/cloister-worker-broker-fixture child-project-rw-write'",
         "forged legacy broker payload is rejected",
     )
     if "parse CLOISTER_BROKER_PARENT_CAPABILITY" not in forged_payload_output and "unknown field" not in forged_payload_output:

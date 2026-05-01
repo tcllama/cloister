@@ -393,7 +393,7 @@ cloister.sandboxes.dev.network.enable = true;   # default - share host network
 cloister.sandboxes.pdf.network.enable = false; # no network access
 ```
 
-When `network.enable` is `true`, the sandbox shares the host network namespace (`--share-net`). When `false`, the sandbox does not share host networking and seccomp also denies new `AF_NETLINK` sockets.
+When `network.enable` is `true`, the sandbox shares the active network namespace (`--share-net`). When `false`, the sandbox does not share networking and seccomp also denies new `AF_NETLINK` sockets unless `network.namespace` is set.
 
 ### Network namespace
 
@@ -403,15 +403,12 @@ To route all sandbox network traffic through a specific Linux network namespace 
 cloister.sandboxes.dev.network.namespace = "vpn";
 ```
 
-This requires the `cloister-netns` NixOS module on the host system plus a declarative namespace definition:
+Setting `network.namespace` implies networking for that sandbox even if a preset or override set `network.enable = false`, because bubblewrap must preserve the joined namespace with `--share-net`. This requires the `cloister-netns` NixOS module on the host system plus a declarative namespace definition:
 
 ```nix
 {
   imports = [ cloister.nixosModules.cloister-netns ];
-  cloister-netns = {
-    enable = true;
-    networks.vpn.isolated = true;
-  };
+  cloister-netns.networks.vpn.isolated = true;
 }
 ```
 
@@ -586,7 +583,6 @@ Use `audio.pipewire.pulseOnly = true` for audio-only sandboxes that need playbac
 cloister.sandboxes.dev.audio.pipewire = {
   enable = true;
   filters = {
-    # filters.enable defaults to true when PipeWire audio is enabled.
     audioOut = true;  # speakers (default)
     # audioIn = true; # microphones
     # videoIn = true; # cameras exposed through filtered PipeWire
@@ -629,14 +625,13 @@ Allows sandboxed tools to send desktop notifications through a filtered, per-lau
 
 ```nix
 cloister.sandboxes = {
-  dev.workerBroker = {
-    enable = true;
-    spawnableProfiles.project = {
-      sandbox = "worker";
-      workspace.mode = "project-rw";
-      delegatedPerDirMounts.worktrees = "rw";
+  dev.workerBroker.profiles.project = {
+    sandbox = "worker";
+    workspace.mode = "project-rw";
+    delegatedPerDirMounts.worktrees = {
+      mode = "rw";
+      path = "/local/worktrees/dev";
     };
-    availableDelegatedPerDirMounts.worktrees.path = "/local/worktrees/dev";
   };
 
   worker = {
@@ -735,9 +730,8 @@ See the sections above for usage examples and explanations.
 | `shell.customRcPath.bashenv` | nullOr path | `null` | Custom bashenv file to source inside the sandbox |
 | `shell.customRcPath.bashrc` | nullOr path | `null` | Custom bashrc file to source inside the sandbox |
 | `shell.customRcPath.profile` | nullOr path | `null` | Custom profile file to source inside the sandbox |
-| `workerBroker.enable` | bool | `false` | Enable worker broker support for spawnable sandbox profiles |
-| `workerBroker.spawnableProfiles` | attrsOf submodule | `{}` | Spawnable worker broker profiles keyed by profile name |
-| `workerBroker.availableDelegatedPerDirMounts` | attrsOf submodule | `{}` | Available delegated per-directory mounts keyed by sandbox-relative path |
+| `workerBroker.profiles` | attrsOf submodule | `{}` | Worker broker profiles keyed by profile name; non-empty profiles enable worker broker support |
+| `workerBroker.profiles.<name>.delegatedPerDirMounts` | attrsOf submodule | `{}` | Delegated mounts keyed by sandbox-relative path, with `mode`, `path`, and optional `subPath` |
 | `network.enable` | bool | `true` | Share host network namespace |
 | `network.namespace` | nullOr str | `null` | Linux network namespace to join (localhost-netns host services are reachable as `host.internal:<port>`) |
 | `sandbox.bindWorkingDirectory` | bool | `true` | Bind-mount the working directory (git root or CWD) into the sandbox. Disable for app-specific sandboxes |
@@ -768,7 +762,7 @@ See the sections above for usage examples and explanations.
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
 | `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |
 | `gui.fonts` | list of package | `[]`\* | Font packages for fontconfig (*`noto-fonts` and `noto-fonts-color-emoji` added when GUI enabled) |
-| `gui.packages` | list of package | `[]`* | GUI asset/plugin packages for `XDG_DATA_DIRS` and `QT_PLUGIN_PATH` (*Adwaita defaults added when GUI enabled) |
+| `gui.packages` | list of package | `[]`* | GUI asset/plugin packages for `XDG_DATA_DIRS` and `QT_PLUGIN_PATH` (\*Adwaita defaults added when GUI enabled) |
 | `gui.theme.gtk` | str | `"Adwaita"` | GTK theme name (sets `GTK_THEME` env var and GTK settings) |
 | `gui.theme.icon` | str | `"Adwaita"` | Icon theme name for GTK settings |
 | `gui.theme.qt.platform` | str | `"gtk3"` | Qt platform theme plugin (sets `QT_QPA_PLATFORMTHEME`) |
@@ -803,10 +797,9 @@ See the sections above for usage examples and explanations.
 | `dbus.rawPolicies.broadcast` | attrsOf (list of str) | `{}` | Raw per-name broadcast rules |
 | `audio.pipewire.enable` | bool | `false` | Enable filtered PipeWire-backed audio |
 | `audio.pipewire.pulseOnly` | bool | `false` | Expose only a filtered PulseAudio-compatible proxy socket while keeping PipeWire hidden from the sandbox |
-| `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (\*auto-enabled by `audio.pipewire.enable`) |
-| `audio.pipewire.filters.audioOut` | bool | `true` | Allow playback to speakers/sinks when filtering is enabled |
-| `audio.pipewire.filters.audioIn` | bool | `false` | Allow microphone access when filtering is enabled |
-| `audio.pipewire.filters.videoIn` | bool | `false` | Allow camera nodes when filtering is enabled |
+| `audio.pipewire.filters.audioOut` | bool | `true` | Allow playback to speakers/sinks when PipeWire audio is enabled |
+| `audio.pipewire.filters.audioIn` | bool | `false` | Allow microphone access when PipeWire audio is enabled |
+| `audio.pipewire.filters.videoIn` | bool | `false` | Allow camera nodes when PipeWire audio is enabled |
 | `audio.pipewire.filters.control` | bool | `false` | Allow volume and mute changes on visible nodes |
 | `audio.pipewire.filters.routing` | bool | `false` | Allow default-device and stream-routing changes |
 | `audio.pipewire.dbus.enable` | bool | `true` | Let sandboxed PipeWire clients use D-Bus support when a filtered bus is available |

@@ -319,6 +319,8 @@ let
     )
   );
 
+  effectiveNetworkEnabled = sCfg.network.enable || sCfg.network.namespace != null;
+
   # The JSON config for the compiled binary
   sandboxConfigJsonBase =
     assert _imageStoreConfigCheck == null;
@@ -332,7 +334,7 @@ let
       shell_host_config = sCfg.shell.hostConfig;
       default_command = sCfg.defaultCommand;
 
-      network_enable = sCfg.network.enable;
+      network_enable = effectiveNetworkEnabled;
       network_namespace = sCfg.network.namespace;
       gui_enable = sCfg.gui.enable;
       ssh_enable = sCfg.ssh.enable;
