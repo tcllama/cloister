@@ -972,8 +972,8 @@ fn start_pulse_only_bridge(
     socket::remove_stale_socket(&socket_path)
         .map_err(|e| format!("{prefix}: pulse-only socket cleanup '{socket_path}': {e}"))?;
 
-    let identity = pulse_proxy_identity(config)?;
     let (anonymize_file_paths, mut child) = if config.anonymize {
+        let identity = pulse_proxy_identity(config)?;
         let proxy_home = format!("/home/{identity}");
         let overlays = features::anonymize_identity_args(
             identity,
