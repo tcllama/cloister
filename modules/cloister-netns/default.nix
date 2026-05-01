@@ -495,7 +495,8 @@ let
       portList = lib.optionalString (!allowsAllPorts) (
         lib.concatMapStringsSep ", " toString allowedPorts
       );
-      dportMatch = lib.optionalString (!allowsAllPorts) " dport { ${portList} }";
+      protoMatch =
+        proto: if allowsAllPorts then "meta l4proto ${proto}" else "${proto} dport { ${portList} }";
     in
     mkVethService {
       inherit
@@ -511,21 +512,21 @@ let
         table ip cloister-netns-${name} {
           chain prerouting {
             type nat hook prerouting priority dstnat; policy accept;
-            iifname "${vethHost}" tcp${dportMatch} dnat to 127.0.0.1
-           iifname "${vethHost}" udp${dportMatch} dnat to 127.0.0.1
+            iifname "${vethHost}" ${protoMatch "tcp"} dnat to 127.0.0.1
+           iifname "${vethHost}" ${protoMatch "udp"} dnat to 127.0.0.1
          }
          chain forward {
            type filter hook forward priority filter; policy accept;
            iifname "${vethHost}" ct state established,related accept
-           iifname "${vethHost}" tcp${dportMatch} accept
-           iifname "${vethHost}" udp${dportMatch} accept
+           iifname "${vethHost}" ${protoMatch "tcp"} accept
+           iifname "${vethHost}" ${protoMatch "udp"} accept
            iifname "${vethHost}" drop
          }
          chain input {
            type filter hook input priority filter; policy accept;
            iifname "${vethHost}" ct state established,related accept
-           iifname "${vethHost}" tcp${dportMatch} accept
-           iifname "${vethHost}" udp${dportMatch} accept
+           iifname "${vethHost}" ${protoMatch "tcp"} accept
+           iifname "${vethHost}" ${protoMatch "udp"} accept
             iifname "${vethHost}" drop
           }
         }

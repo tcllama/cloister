@@ -272,6 +272,14 @@ let
     };
   };
 
+  nftRulesFromStart =
+    start:
+    let
+      afterNft = builtins.elemAt (lib.splitString "nft -f " start) 1;
+      path = builtins.head (lib.splitString "\n" afterNft);
+    in
+    builtins.readFile path;
+
   orderedPairsServices = orderedPairsEval.config.systemd.services;
   orderedAlphaStart =
     builtins.readFile
@@ -287,6 +295,7 @@ let
       orderedPairsServices."cloister-netns-gamma".serviceConfig.ExecStart;
   evalServices = eval.config.systemd.services;
   evalDevStart = builtins.readFile evalServices."cloister-netns-dev".serviceConfig.ExecStart;
+  evalDevNft = nftRulesFromStart evalDevStart;
   evalLanStart = builtins.readFile evalServices."cloister-netns-lan".serviceConfig.ExecStart;
   fileBackedServices = fileBackedInputsEval.config.systemd.services;
   fileBackedVpnStart =
@@ -295,6 +304,7 @@ let
   isolatedService = isolatedEval.config.systemd.services."cloister-netns-offline";
   autoHostnameService = wgAutoHostnameEval.config.systemd.services."cloister-netns-vpn";
   autoIpService = wgAutoIpEval.config.systemd.services."cloister-netns-vpn";
+  orderedAlphaNft = nftRulesFromStart orderedAlphaStart;
 in
 checks.mkCheck "test-cloister-netns" [
   (checks.expectTrue "netns wrapper configured" (eval.config.security.wrappers ? "cloister-netns"))
@@ -343,6 +353,14 @@ checks.mkCheck "test-cloister-netns" [
     evalDevStart
   )
   (checks.expectContains "lan applies a generated nft ruleset" "nft -f /nix/store/" evalLanStart)
+  (checks.expectContains "localhost all-port nft rules use a protocol match"
+    ''iifname "veth-alpha" meta l4proto tcp dnat to 127.0.0.1''
+    orderedAlphaNft
+  )
+  (checks.expectContains "localhost restricted nft rules keep port match"
+    ''iifname "veth-dev" tcp dport { 3000 } dnat to 127.0.0.1''
+    evalDevNft
+  )
   (checks.expectEq "localhost service skips network-online target in auto mode" [ ] (
     evalServices."cloister-netns-dev".after or [ ]
   ))
