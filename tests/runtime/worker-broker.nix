@@ -18,6 +18,30 @@ let
       child-project-rw-write)
         printf '%s\n' 'project-rw' > project-rw.txt
         ;;
+      child-stdio)
+        read -r line
+        printf 'stdout:%s\n' "$line"
+        printf 'stderr:%s\n' "$line" >&2
+        ;;
+      child-stdin-eof)
+        if read -r line; then
+          printf 'unexpected-stdin:%s\n' "$line"
+          exit 1
+        fi
+        printf '%s\n' stdin-eof
+        ;;
+      child-check-stdout)
+        test -w /proc/self/fd/1
+        printf '%s\n' stdout-fd-open > broker-closed-stdout.txt
+        ;;
+      child-large-argv)
+        shift
+        total=0
+        for arg in "$@"; do
+          total=$((total + ''${#arg}))
+        done
+        printf '%s\n' "$total"
+        ;;
       child-same-sandbox-write)
         printf '%s\n' 'same-sandbox' > same-sandbox.txt
         ;;
@@ -30,6 +54,25 @@ let
         ;;
       parent-project-rw)
         clb-project "$0" child-project-rw-write
+        ;;
+      parent-stdio-capture)
+        printf '%s\n' broker-input | clb-project "$0" child-stdio > broker-stdout.txt 2> broker-stderr.txt
+        ;;
+      parent-closed-stdin)
+        clb-project "$0" child-stdin-eof <&- > broker-closed-stdin.txt
+        ;;
+      parent-closed-stdout)
+        clb-project "$0" child-check-stdout >&-
+        ;;
+      parent-large-argv)
+        long_arg=$(${pkgs.python3}/bin/python -c 'print("x" * 1000)')
+        set -- "$0" child-large-argv
+        i=0
+        while [ "$i" -lt 512 ]; do
+          set -- "$@" "$long_arg"
+          i=$((i + 1))
+        done
+        clb-project "$@" > broker-large-argv.txt
         ;;
       parent-overlay)
         clb-ephemeral "$0" child-overlay-write
@@ -212,6 +255,56 @@ pkgs.testers.runNixOSTest (_: {
         "cat ${projectDir}/same-sandbox.txt",
         "same-sandbox",
         "same-sandbox broker launcher writes visible file content",
+    )
+
+    machine.succeed(
+        tester_shell
+        + "'cd ${projectDir} && rm -f broker-stdout.txt broker-stderr.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-stdio-capture'"
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/broker-stdout.txt",
+        "stdout:broker-input",
+        "worker broker child stdout is captured by parent sandbox program",
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/broker-stderr.txt",
+        "stderr:broker-input",
+        "worker broker child stderr is captured by parent sandbox program",
+    )
+
+    machine.succeed(
+        tester_shell
+        + "'cd ${projectDir} && rm -f broker-closed-stdin.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-closed-stdin'"
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/broker-closed-stdin.txt",
+        "stdin-eof",
+        "worker broker launch tolerates closed stdin for non-interactive commands",
+    )
+
+    machine.succeed(
+        tester_shell
+        + "'cd ${projectDir} && rm -f broker-closed-stdout.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-closed-stdout'"
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/broker-closed-stdout.txt",
+        "stdout-fd-open",
+        "worker broker launch tolerates closed stdout for non-interactive commands",
+    )
+
+    machine.succeed(
+        tester_shell
+        + "'cd ${projectDir} && rm -f broker-large-argv.txt && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-large-argv'"
+    )
+    assert_eq(
+        machine,
+        "cat ${projectDir}/broker-large-argv.txt",
+        "512000",
+        "worker broker launch handles request payloads larger than one fd-passing sendmsg",
     )
 
     machine.succeed(

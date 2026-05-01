@@ -23,6 +23,8 @@ clb-<profile> <command> [args...]
 
 The launcher selects the configured child sandbox and passes the command argv directly. `-c` is rejected for broker launches.
 
+Brokered child launches inherit the launcher's stdin, stdout, and stderr via Unix file descriptor passing, so pipes, redirections, and output capture from programs that spawn `clb-<profile>` behave like normal subprocess stdio. If one of the standard descriptors is closed, the launcher substitutes `/dev/null` for that stream so non-interactive broker launches can still start.
+
 ## Trust Model
 
 - parent sandboxes receive an opaque capability token in env

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -8,7 +9,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{self, ExitStatus};
+use std::process::{self, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::thread;
@@ -1234,8 +1235,293 @@ fn send_broker_response(
         .map_err(|e| format!("write broker launch response: {e}"))
 }
 
+const BROKER_STDIO_FD_COUNT: usize = 3;
+const BROKER_REQUEST_FD_PREFIX_LEN: usize = 1;
+
+type BrokerStdioRawFds = [RawFd; BROKER_STDIO_FD_COUNT];
+
+fn cmsg_align(len: usize) -> usize {
+    let align = std::mem::size_of::<usize>();
+    (len + align - 1) & !(align - 1)
+}
+
+fn cmsg_space(payload_len: usize) -> usize {
+    cmsg_align(std::mem::size_of::<libc::cmsghdr>()) + cmsg_align(payload_len)
+}
+
+fn cmsg_len(payload_len: usize) -> usize {
+    cmsg_align(std::mem::size_of::<libc::cmsghdr>()) + payload_len
+}
+
+struct CmsgBuffer {
+    storage: Vec<libc::cmsghdr>,
+    len: usize,
+}
+
+impl CmsgBuffer {
+    fn new(len: usize) -> Self {
+        let elem_size = std::mem::size_of::<libc::cmsghdr>();
+        let elem_count = len.div_ceil(elem_size).max(1);
+        Self {
+            storage: vec![unsafe { std::mem::zeroed() }; elem_count],
+            len,
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut libc::c_void {
+        self.storage.as_mut_ptr() as *mut libc::c_void
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+fn fd_is_open(fd: RawFd) -> bool {
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0 {
+        true
+    } else {
+        io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
+    }
+}
+
+fn open_dev_null_stdio(for_output: bool) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(!for_output).write(for_output);
+    let file = options
+        .open("/dev/null")
+        .map_err(|e| format!("open /dev/null for broker stdio fallback: {e}"))?;
+    let fd = file.as_raw_fd();
+    if fd > libc::STDERR_FILENO {
+        return Ok(file);
+    }
+
+    let dup_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 1) };
+    if dup_fd < 0 {
+        return Err(format!(
+            "duplicate /dev/null broker stdio fallback fd: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    drop(file);
+    Ok(unsafe { std::fs::File::from_raw_fd(dup_fd) })
+}
+
+fn broker_stdio_fds_for_send() -> Result<(BrokerStdioRawFds, Vec<std::fs::File>), String> {
+    let mut fallbacks = Vec::new();
+    let mut fds = [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO];
+    for (index, fd) in fds.iter_mut().enumerate() {
+        if !fd_is_open(*fd) {
+            let fallback = open_dev_null_stdio(index != 0)?;
+            *fd = fallback.as_raw_fd();
+            fallbacks.push(fallback);
+        }
+    }
+    Ok((fds, fallbacks))
+}
+
+fn attach_stdio_fds(msg: &mut libc::msghdr, stdio_fds: &BrokerStdioRawFds) {
+    unsafe {
+        let cmsg = msg.msg_control as *mut libc::cmsghdr;
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = cmsg_len(std::mem::size_of_val(stdio_fds));
+        std::ptr::copy_nonoverlapping(
+            stdio_fds.as_ptr(),
+            libc::CMSG_DATA(cmsg) as *mut RawFd,
+            stdio_fds.len(),
+        );
+        msg.msg_controllen = (*cmsg).cmsg_len;
+    }
+}
+
+fn send_broker_request_with_stdio(
+    stream: &UnixStream,
+    payload: &[u8],
+    stdio_fds: &BrokerStdioRawFds,
+    fallback_files: Vec<std::fs::File>,
+) -> Result<(), String> {
+    if payload.is_empty() {
+        return Err("broker launch request payload is empty".to_string());
+    }
+
+    let mut iov = libc::iovec {
+        iov_base: payload.as_ptr() as *mut libc::c_void,
+        iov_len: BROKER_REQUEST_FD_PREFIX_LEN,
+    };
+    let mut control = CmsgBuffer::new(cmsg_space(std::mem::size_of_val(stdio_fds)));
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr();
+    msg.msg_controllen = control.len();
+    attach_stdio_fds(&mut msg, stdio_fds);
+
+    let sent = loop {
+        let result = unsafe { libc::sendmsg(stream.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) };
+        if result >= 0 {
+            break result as usize;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(format!("send broker launch request with stdio fds: {err}"));
+        }
+    };
+
+    if sent != BROKER_REQUEST_FD_PREFIX_LEN {
+        return Err(format!(
+            "short broker launch request fd write: sent {sent} of {BROKER_REQUEST_FD_PREFIX_LEN} bytes"
+        ));
+    }
+
+    // Keep fallback /dev/null descriptors alive until sendmsg has handed them to
+    // the kernel for delivery to the receiver.
+    drop(fallback_files);
+
+    let mut stream_ref = stream;
+    stream_ref
+        .write_all(&payload[sent..])
+        .map_err(|e| format!("write broker launch request: {e}"))
+}
+
+fn close_raw_fds(fds: &[RawFd]) {
+    for &fd in fds {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+fn close_received_scm_rights(msg: &libc::msghdr) {
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data_len = (*cmsg).cmsg_len.saturating_sub(cmsg_len(0));
+                let fd_count = data_len / std::mem::size_of::<RawFd>();
+                let data = libc::CMSG_DATA(cmsg) as *const RawFd;
+                let received_fds = std::slice::from_raw_parts(data, fd_count);
+                close_raw_fds(received_fds);
+            }
+            cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+        }
+    }
+}
+
+struct BrokerStdioFds {
+    fds: [RawFd; 3],
+    consumed: bool,
+}
+
+impl BrokerStdioFds {
+    fn new(fds: [RawFd; 3]) -> Self {
+        Self {
+            fds,
+            consumed: false,
+        }
+    }
+
+    fn into_stdio(mut self) -> [Stdio; 3] {
+        self.consumed = true;
+        unsafe {
+            [
+                Stdio::from(std::fs::File::from_raw_fd(self.fds[0])),
+                Stdio::from(std::fs::File::from_raw_fd(self.fds[1])),
+                Stdio::from(std::fs::File::from_raw_fd(self.fds[2])),
+            ]
+        }
+    }
+}
+
+impl Drop for BrokerStdioFds {
+    fn drop(&mut self) {
+        if !self.consumed {
+            close_raw_fds(&self.fds);
+        }
+    }
+}
+
+fn recv_broker_request_with_stdio(
+    stream: &mut UnixStream,
+) -> Result<(Vec<u8>, BrokerStdioFds), String> {
+    let mut first_payload = vec![0_u8; 64 * 1024];
+    let mut iov = libc::iovec {
+        iov_base: first_payload.as_mut_ptr() as *mut libc::c_void,
+        iov_len: first_payload.len(),
+    };
+    let mut control = CmsgBuffer::new(cmsg_space(
+        BROKER_STDIO_FD_COUNT * std::mem::size_of::<RawFd>(),
+    ));
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr();
+    msg.msg_controllen = control.len();
+
+    let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+    if received < 0 {
+        return Err(format!(
+            "read broker launch request: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if received == 0 {
+        return Err("read broker launch request: empty request".to_string());
+    }
+    if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
+        close_received_scm_rights(&msg);
+        return Err("broker launch request stdio fd control data was truncated".to_string());
+    }
+
+    let mut stdio_fds = None;
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let data_len = (*cmsg).cmsg_len.saturating_sub(cmsg_len(0));
+                let fd_count = data_len / std::mem::size_of::<RawFd>();
+                let data = libc::CMSG_DATA(cmsg) as *const RawFd;
+                let received_fds = std::slice::from_raw_parts(data, fd_count);
+                if fd_count != BROKER_STDIO_FD_COUNT {
+                    close_raw_fds(received_fds);
+                    return Err(format!(
+                        "broker launch request sent {fd_count} stdio fds, expected {BROKER_STDIO_FD_COUNT}"
+                    ));
+                }
+                if stdio_fds.is_some() {
+                    close_raw_fds(received_fds);
+                    return Err("broker launch request sent multiple stdio fd sets".to_string());
+                }
+                stdio_fds = Some(BrokerStdioFds::new([
+                    received_fds[0],
+                    received_fds[1],
+                    received_fds[2],
+                ]));
+            }
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+    }
+
+    let stdio_fds =
+        stdio_fds.ok_or_else(|| "broker launch request did not include stdio fds".to_string())?;
+
+    first_payload.truncate(received as usize);
+    stream
+        .read_to_end(&mut first_payload)
+        .map_err(|e| format!("read broker launch request: {e}"))?;
+    Ok((first_payload, stdio_fds))
+}
+
+fn apply_broker_child_stdio(cmd: &mut process::Command, stdio_fds: BrokerStdioFds) {
+    let [stdin, stdout, stderr] = stdio_fds.into_stdio();
+    cmd.stdin(stdin);
+    cmd.stdout(stdout);
+    cmd.stderr(stderr);
+}
+
 fn handle_broker_launch_request(
     request: broker::BrokerLaunchRequest,
+    stdio_fds: BrokerStdioFds,
     generated_launchers: &std::collections::BTreeMap<
         String,
         cloister_sandbox_lib::config::GeneratedLauncher,
@@ -1282,6 +1568,7 @@ fn handle_broker_launch_request(
         BROKER_TRUSTED_RECORD_ENV,
         session_record_path.to_string_lossy().to_string(),
     );
+    apply_broker_child_stdio(&mut cmd, stdio_fds);
 
     let status = cmd
         .status()
@@ -1352,15 +1639,13 @@ fn start_broker_listener(
                 break;
             }
 
-            let mut payload = Vec::new();
-            if let Err(e) = stream.read_to_end(&mut payload) {
-                let _ = send_broker_response(
-                    &mut stream,
-                    1,
-                    Some(format!("read broker launch request: {e}")),
-                );
-                continue;
-            }
+            let (payload, stdio_fds) = match recv_broker_request_with_stdio(&mut stream) {
+                Ok(result) => result,
+                Err(e) => {
+                    let _ = send_broker_response(&mut stream, 1, Some(e));
+                    continue;
+                }
+            };
 
             let request: broker::BrokerLaunchRequest = match serde_json::from_slice(&payload) {
                 Ok(request) => request,
@@ -1376,6 +1661,7 @@ fn start_broker_listener(
 
             let result = handle_broker_launch_request(
                 request,
+                stdio_fds,
                 &generated_launchers,
                 &session_record_path,
                 &host_project_root,
@@ -1403,6 +1689,8 @@ fn run_broker_client(
     _config: &SandboxConfig,
     selector: &BrokerLaunchSelector,
     sandbox_args: &[String],
+    stdio_fds: &BrokerStdioRawFds,
+    fallback_files: Vec<std::fs::File>,
 ) -> Result<i32, String> {
     let record_path = child_broker_record_path_with_override(None)?;
     let store = record_path.parent().ok_or_else(|| {
@@ -1448,9 +1736,7 @@ fn run_broker_client(
         .map_err(|e| format!("serialize broker launch request: {e}"))?;
     let mut stream = UnixStream::connect(BROKER_SOCKET_CHILD_PATH)
         .map_err(|e| format!("connect broker socket '{BROKER_SOCKET_CHILD_PATH}': {e}"))?;
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write broker launch request: {e}"))?;
+    send_broker_request_with_stdio(&stream, &payload, stdio_fds, fallback_files)?;
     stream
         .shutdown(std::net::Shutdown::Write)
         .map_err(|e| format!("shutdown broker socket write end: {e}"))?;
@@ -1710,6 +1996,14 @@ fn run() -> i32 {
         eprintln!("{e}");
         process::exit(2);
     });
+    let broker_client_stdio = if cli.broker_launch.is_some() {
+        Some(broker_stdio_fds_for_send().unwrap_or_else(|e| {
+            eprintln!("cloister-sandbox: {e}");
+            process::exit(1);
+        }))
+    } else {
+        None
+    };
 
     if matches!(cli.sandbox_args.as_slice(), [arg] if arg == "--version" || arg == "--build-info")
         || (cli.config_path.is_none()
@@ -1762,11 +2056,19 @@ fn run() -> i32 {
                 eprintln!("{prefix}: {e}");
                 process::exit(2);
             }
-            let broker_status = run_broker_client(&config, selector, &cli.sandbox_args)
-                .unwrap_or_else(|e| {
-                    eprintln!("{prefix}: {e}");
-                    process::exit(1);
-                });
+            let (stdio_fds, fallback_files) = broker_client_stdio
+                .expect("broker launch stdio fds are prepared when broker launch is requested");
+            let broker_status = run_broker_client(
+                &config,
+                selector,
+                &cli.sandbox_args,
+                &stdio_fds,
+                fallback_files,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("{prefix}: {e}");
+                process::exit(1);
+            });
             return broker_status;
         }
     }
