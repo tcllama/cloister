@@ -11,34 +11,69 @@ let
   inherit (config.cloister) defaultShell;
   inherit (config.xdg) configHome;
 
-  bindSubmodule = {
+  bindEntryType = lib.types.oneOf [
+    lib.types.str
+    (lib.types.submodule {
+      options = {
+        src = lib.mkOption {
+          type = lib.types.oneOf [
+            lib.types.path
+            lib.types.str
+          ];
+          description = "Source path on host. Relative paths are resolved under the sandbox home.";
+        };
+        dest = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Destination inside sandbox. Defaults to src when null.";
+        };
+        optional = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "If true, missing source paths are ignored.";
+        };
+      };
+    })
+  ];
+
+  managedEntryType = lib.types.oneOf [
+    lib.types.str
+    (lib.types.submodule {
+      options = {
+        src = lib.mkOption {
+          type = lib.types.oneOf [
+            lib.types.path
+            lib.types.str
+          ];
+          description = "Source file or tree to bind read-only into the sandbox.";
+        };
+        dest = lib.mkOption {
+          type = lib.types.str;
+          description = "Home-relative destination path for the read-only bind.";
+        };
+      };
+    })
+  ];
+
+  copyEntryType = lib.types.submodule {
     options = {
       src = lib.mkOption {
         type = lib.types.str;
-        description = "Source path on host (use config.home.homeDirectory instead of $HOME)";
+        description = "Absolute source path to copy from. Missing or non-regular sources fail startup.";
       };
       dest = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Destination inside sandbox. Defaults to src when null.";
+        type = lib.types.str;
+        description = "Destination path inside the sandbox home.";
       };
-      try = lib.mkOption {
+      mode = lib.mkOption {
+        type = lib.types.str;
+        default = "0644";
+        description = "File permissions mode (for example, '0644').";
+      };
+      overwrite = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "If true, uses --ro-bind-try/--bind-try (won't fail if source is missing).";
-      };
-    };
-  };
-
-  symlinkSubmodule = {
-    options = {
-      target = lib.mkOption {
-        type = lib.types.str;
-        description = "Symlink target path.";
-      };
-      link = lib.mkOption {
-        type = lib.types.str;
-        description = "Symlink location inside sandbox.";
+        description = "If true, overwrites the writable sandbox-state copy on each launch.";
       };
     };
   };
@@ -134,13 +169,6 @@ let
         }
       ) config.workerBroker.profiles;
 
-      sandboxHome =
-        if config.sandbox.anonymize.enable then
-          "/home/${config.sandbox.anonymize.username}"
-        else
-          args.config.home.homeDirectory;
-
-      pipewireDbusEnabled = config.dbus.enable && config.audio.pipewire.dbus.enable;
       pipewireNativeEnabled = config.audio.pipewire.enable && !config.audio.pipewire.pulseOnly;
       fileChooserPortalEnabled = config.dbus.portal.fileChooser;
       notificationBusEnabled = config.dbus.notifications;
@@ -154,45 +182,7 @@ let
           "" "$1" "@a{sv} {}" > /dev/null
       '';
 
-      pipewireContextProperties =
-        if pipewireDbusEnabled then
-          ""
-        else
-          ''
-            context.properties = {
-                support.dbus = false
-            }
-          '';
-
-      pipewireClientConf = pkgs.writeText "cloister-pipewire-client.conf" ''
-        # Cloister: disable D-Bus-dependent SPA support for sandboxed PipeWire clients
-        ${pipewireContextProperties}
-      '';
-
-      customShellDest = "${sandboxHome}/.config/cl-shell/${name}/custom";
       customShellSource = "$HOME/.config/cl-shell/${name}/custom";
-
-      customShellBinds =
-        let
-          mkCustomBind = destName: srcPath: {
-            src = toString srcPath;
-            dest = "${customShellDest}/${destName}";
-            try = false;
-          };
-          rcFields = [
-            "zshenv"
-            "zshrc"
-            "bashenv"
-            "bashrc"
-            "profile"
-          ];
-        in
-        lib.concatMap (
-          field:
-          lib.optional (config.shell.customRcPath.${field} != null) (
-            mkCustomBind field config.shell.customRcPath.${field}
-          )
-        ) rcFields;
 
       renderAliases = lib.concatMapStringsSep "\n" (
         n: shellLib.renderAlias n regCfg.aliases.${n}
@@ -537,162 +527,45 @@ let
             '';
           };
 
-          dirs = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
+          readOnly = lib.mkOption {
+            type = lib.types.listOf bindEntryType;
             default = [ ];
-            description = "Directories to create inside the sandbox (--dir).";
+            description = "Read-only host path binds. Strings are home-relative paths; attrs may set src, dest, and optional.";
           };
 
-          extraDirs = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
+          readWrite = lib.mkOption {
+            type = lib.types.listOf bindEntryType;
             default = [ ];
-            description = "Additional directories appended to sandbox dirs.";
+            description = "Read-write host path binds. Strings are home-relative paths; attrs may set src, dest, and optional.";
           };
 
-          tmpfs = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
+          managed = lib.mkOption {
+            type = lib.types.listOf managedEntryType;
             default = [ ];
-            description = "Tmpfs mounts inside the sandbox (--tmpfs).";
+            description = ''
+              Home Manager managed file keys/prefixes or explicit read-only binds.
+              String entries resolve xdg.configFile and home.file entries; attr
+              entries bind a fixed src to a home-relative dest.
+            '';
           };
 
-          symlinks = lib.mkOption {
-            type = lib.types.listOf (lib.types.submodule symlinkSubmodule);
-            default = [ ];
-            description = "Symlinks to create inside the sandbox (--symlink).";
-          };
-
-          extraSymlinks = lib.mkOption {
-            type = lib.types.listOf (lib.types.submodule symlinkSubmodule);
-            default = [ ];
-            description = "Additional symlinks appended to sandbox symlinks.";
-          };
-
-          binds = {
-            ro = lib.mkOption {
-              type = lib.types.listOf (lib.types.submodule bindSubmodule);
-              default = [ ];
-              description = "Read-only bind mounts.";
-            };
-
-            rw = lib.mkOption {
-              type = lib.types.listOf (lib.types.submodule bindSubmodule);
-              default = [ ];
-              description = "Read-write bind mounts.";
-            };
-          };
-
-          extraBinds = {
-            required = {
-              ro = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Home-relative paths for required read-only binds (--ro-bind). Must exist.";
-              };
-
-              rw = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Home-relative paths for required read-write binds (--bind). Must exist.";
-              };
-            };
-
-            optional = {
-              ro = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Home-relative paths for optional read-only binds (--ro-bind-try). May not exist.";
-              };
-
-              rw = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Home-relative paths for optional read-write binds (--bind-try). May not exist.";
-              };
-            };
-
-            dir = lib.mkOption {
+          state = {
+            dirs = lib.mkOption {
               type = lib.types.attrsOf (lib.types.listOf lib.types.str);
               default = { };
-              description = ''
-                Volume-backed binds. Keys are base directories (e.g. "/local", "/persist"),
-                values are home-relative paths. Source = {key}/cloister/{name}/{path},
-                dest = $HOME/{path}. Always rw, mkdir'd before bwrap.
-              '';
+              description = "Volume-backed writable directories, keyed by host base directory.";
             };
 
-            file = lib.mkOption {
+            files = lib.mkOption {
               type = lib.types.attrsOf (lib.types.listOf lib.types.str);
               default = { };
-              description = ''
-                Volume-backed file binds. Like dir, but creates files instead of directories.
-                Keys are base directories (e.g. "/local", "/persist"),
-                values are home-relative paths. Source = {key}/cloister/{name}/{path},
-                dest = $HOME/{path}. Always rw, touch'd before bwrap.
-              '';
+              description = "Volume-backed writable files, keyed by host base directory.";
             };
 
-            perDir = lib.mkOption {
+            projectDirs = lib.mkOption {
               type = lib.types.attrsOf (lib.types.listOf lib.types.str);
               default = { };
-              description = ''
-                Per-directory binds. Keys are host base directories (for example
-                "/ephemeral" or "/local/worktrees"), values are home-relative
-                paths isolated by a hash of the sandbox directory.
-                Source = {key}/$DIR_HASH/{path}, dest = $HOME/{path}. Always rw,
-                mkdir'd before bwrap.
-              '';
-            };
-
-            managedFile = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = ''
-                Home-manager managed file keys or directory prefixes whose Nix store
-                sources are ro-bound into the sandbox.
-
-                Keys are resolved against xdg.configFile first (bound at
-                $HOME/.config/<key>), then home.file as configHome/<key> (also bound
-                at $HOME/.config/<key>), then home.file directly (bound at
-                $HOME/<key>). Exact keys bind a single file; prefixes bind all
-                entries under that prefix. Resolved store sources are also added
-                to the sandbox's exposed Nix store closure, including entries that
-                must be applied as dynamic binds because they overlap a directory
-                bind.
-              '';
-            };
-
-            managedFileBind = lib.mkOption {
-              type = lib.types.listOf (
-                lib.types.submodule {
-                  options = {
-                    src = lib.mkOption {
-                      type = lib.types.oneOf [
-                        lib.types.path
-                        lib.types.str
-                      ];
-                      description = ''
-                        Source file to bind read-only into the sandbox. This is typically a
-                        Nix store path such as `./assets/opencode/tui.json`.
-                      '';
-                    };
-
-                    dest = lib.mkOption {
-                      type = lib.types.str;
-                      description = ''
-                        Home-relative destination path for the bind (for example
-                        `.config/opencode/tui.json`).
-                      '';
-                    };
-                  };
-                }
-              );
-              default = [ ];
-              description = ''
-                Explicit read-only file binds whose sources come directly from the Nix
-                store or another fixed path instead of Home Manager. Destinations are
-                home-relative and can overlay files inside `extraBinds.dir` or
-                `extraBinds.perDir` mounts.
-              '';
+              description = "Per-project writable directories keyed by host base directory and isolated by the working-directory hash.";
             };
           };
 
@@ -711,46 +584,23 @@ let
             description = "Absolute paths (or prefixes) that are not allowed to be used as SANDBOX_DIR. Strict home directory policy is enforced separately.";
           };
 
-          copyFileBase = lib.mkOption {
+          copyBase = lib.mkOption {
             type = lib.types.str;
             default = "${args.config.xdg.stateHome}/cloister";
             defaultText = "\${config.xdg.stateHome}/cloister";
-            description = "Base directory on the host where copyFiles are stored. Defaults to per-sandbox state dir.";
+            description = "Host base directory where sandbox.copies writable state is stored.";
           };
 
-          copyFiles = lib.mkOption {
-            type = lib.types.listOf (
-              lib.types.submodule {
-                options = {
-                  src = lib.mkOption {
-                    type = lib.types.str;
-                    description = "Source path to copy from (use config.home.homeDirectory instead of $HOME). Sandbox startup fails if the file is missing or not a regular file.";
-                  };
-                  dest = lib.mkOption {
-                    type = lib.types.str;
-                    description = "Destination path inside sandbox (must start with \${config.home.homeDirectory}/)";
-                  };
-                  mode = lib.mkOption {
-                    type = lib.types.str;
-                    default = "0644";
-                    description = "File permissions mode (e.g. '0644').";
-                  };
-                  overwrite = lib.mkOption {
-                    type = lib.types.bool;
-                    default = false;
-                    description = "If true, overwrites the writable sandbox-state copy on each launch. Missing source files still fail startup.";
-                  };
-                };
-              }
-            );
+          copies = lib.mkOption {
+            type = lib.types.listOf copyEntryType;
             default = [ ];
-            description = "Files to copy into the sandbox state writable. Useful for config files you want to edit inside the sandbox without affecting the host. Missing source files fail startup.";
+            description = "Files to copy into writable sandbox state before binding into the sandbox.";
           };
 
-          devBinds = lib.mkOption {
+          devices = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ ];
-            description = "Arbitrary device paths to pass through with --dev-bind. Missing devices are warned about at runtime.";
+            description = "Device paths to pass through with --dev-bind. Missing devices are warned about at runtime.";
           };
 
           env = lib.mkOption {
@@ -1335,119 +1185,6 @@ let
           ];
 
           sandbox = {
-            dirs = lib.mkDefault [
-              "/nix"
-              "/nix/store"
-              "/var"
-              "/run"
-              "/run/current-system/sw/bin"
-              "/usr/bin"
-              "/bin"
-              "/etc/ssl"
-              "/etc/ssl/certs"
-            ];
-
-            tmpfs = lib.mkDefault [ "/tmp" ];
-
-            symlinks = lib.mkDefault (
-              [
-                {
-                  target = "${pkgs.coreutils}/bin/env";
-                  link = "/usr/bin/env";
-                }
-                {
-                  target = "${pkgs.bash}/bin/bash";
-                  link = "/bin/sh";
-                }
-                {
-                  target = "${pkgs.bash}/bin/bash";
-                  link = "/bin/bash";
-                }
-                {
-                  target = "/bin/bash";
-                  link = "/run/current-system/sw/bin/bash";
-                }
-                {
-                  target = "pts/ptmx";
-                  link = "/dev/ptmx";
-                }
-                {
-                  target = "/etc/ssl/certs/ca-bundle.crt";
-                  link = "/etc/ssl/certs/ca-certificates.crt";
-                }
-              ]
-              ++ shellLib.symlinks
-            );
-
-            binds.ro = lib.mkDefault (
-              lib.filter
-                (
-                  b:
-                  b != null && !(config.sandbox.anonymize.enable && (b.src == "/etc/passwd" || b.src == "/etc/group"))
-                )
-                [
-                  { src = "/etc/passwd"; }
-                  { src = "/etc/group"; }
-                  {
-                    src = "/etc/shells";
-                    try = true;
-                  }
-                  (
-                    if config.network.namespace != null then
-                      {
-                        src = "/etc/netns/${config.network.namespace}/hosts";
-                        dest = "/etc/hosts";
-                        try = true;
-                      }
-                    else
-                      {
-                        src = "/etc/hosts";
-                        try = true;
-                      }
-                  )
-                  (
-                    if config.network.namespace != null then
-                      {
-                        src = "/etc/netns/${config.network.namespace}/resolv.conf";
-                        dest = "/etc/resolv.conf";
-                        try = true;
-                      }
-                    else
-                      {
-                        src = "/etc/resolv.conf";
-                        try = true;
-                      }
-                  )
-                  {
-                    src = "/etc/ssh/ssh_known_hosts";
-                    try = true;
-                  }
-                  {
-                    src = "/etc/nix/nix.conf";
-                    try = true;
-                  }
-                  (
-                    if config.sandbox.anonymize.enable then
-                      {
-                        src = "${pkgs.tzdata}/share/zoneinfo/UTC";
-                        dest = "/etc/localtime";
-                      }
-                    else
-                      {
-                        src = "/etc/localtime";
-                        try = true;
-                      }
-                  )
-                  {
-                    src = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-                    dest = "/etc/ssl/certs/ca-bundle.crt";
-                  }
-                ]
-              ++ customShellBinds
-            );
-
-            binds.rw = lib.mkDefault [ ];
-
             env = lib.mkMerge [
               (lib.mapAttrs (_: lib.mkDefault) (
                 {
@@ -1524,27 +1261,6 @@ let
               ]
             )
           );
-
-          sandbox.extraDirs = lib.mkMerge [
-            (lib.mkIf (customShellBinds != [ ]) (lib.mkBefore [ "${sandboxHome}/.config/cl-shell/${name}" ]))
-            (lib.mkIf fileChooserPortalEnabled [
-              "/run/flatpak"
-              "/run/flatpak/doc"
-            ])
-            (lib.mkIf pipewireNativeEnabled [
-              "${sandboxHome}/.config/pipewire"
-              "${sandboxHome}/.config/pipewire/client.conf.d"
-            ])
-          ];
-
-          sandbox.extraSymlinks = lib.mkMerge [
-            (lib.mkIf pipewireNativeEnabled [
-              {
-                target = "${pipewireClientConf}";
-                link = "${sandboxHome}/.config/pipewire/client.conf.d/99-cloister.conf";
-              }
-            ])
-          ];
 
           dbus._portalPolicies = {
             talk = lib.mkMerge [

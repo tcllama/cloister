@@ -70,7 +70,7 @@
       # Linux, so give them a shared temp dir instead of the sandbox's private
       # /tmp when you want "open in existing window/tab" behavior.
       bindWorkingDirectory = false;
-      extraBinds.dir."${config.xdg.stateHome}" = [
+      state.dirs."${config.xdg.stateHome}" = [
         ".config/chromium"
         ".cache/chromium"
         ".cache/chromium-tmp"

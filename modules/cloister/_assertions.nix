@@ -17,17 +17,47 @@
   guiEnabled,
   hasPerDirBinds,
   normalizeCopyDest,
+  normalizePath,
   sandboxNames,
 }:
 let
   workerBrokerCfg = sCfg.workerBroker;
   isRelativeDescendantPath =
-    path: path != "" && !lib.hasPrefix "/" path && normalizeCopyDest path == path;
+    path: path != "" && !lib.hasPrefix "/" path && normalizePath path == path;
   isAbsoluteTraversalFreeHostPath =
     path:
     path != ""
     && lib.hasPrefix "/" path
+    && normalizePath path == path
     && !(builtins.any (segment: segment == "..") (lib.splitString "/" path));
+  isSafeBindPath =
+    path:
+    if lib.hasPrefix "/" path then
+      isAbsoluteTraversalFreeHostPath path
+    else
+      isRelativeDescendantPath path;
+  isSafeBindEntry =
+    entry:
+    if builtins.isString entry then
+      isRelativeDescendantPath entry
+    else
+      isSafeBindPath (toString entry.src) && (entry.dest == null || isSafeBindPath entry.dest);
+  invalidBindEntries = builtins.filter (entry: !isSafeBindEntry entry) (
+    sCfg.sandbox.readOnly ++ sCfg.sandbox.readWrite
+  );
+  invalidStateBases = builtins.filter (base: !isAbsoluteTraversalFreeHostPath base) (
+    lib.attrNames sCfg.sandbox.state.dirs
+    ++ lib.attrNames sCfg.sandbox.state.files
+    ++ lib.attrNames sCfg.sandbox.state.projectDirs
+  );
+  invalidStatePaths = builtins.filter (path: !isRelativeDescendantPath path) (
+    lib.concatLists (lib.attrValues sCfg.sandbox.state.dirs)
+    ++ lib.concatLists (lib.attrValues sCfg.sandbox.state.files)
+    ++ lib.concatLists (lib.attrValues sCfg.sandbox.state.projectDirs)
+  );
+  invalidCopySources = builtins.filter (
+    cf: !isAbsoluteTraversalFreeHostPath cf.src
+  ) sCfg.sandbox.copies;
   workerBrokerEnabled = workerBrokerCfg.profiles != { };
   profileDelegatedMounts = lib.concatMapAttrs (
     profileName: profile:
@@ -96,29 +126,51 @@ in
 [
   {
     assertion = sCfg.sandbox.bindWorkingDirectory || !hasPerDirBinds;
-    message = "cloister.sandboxes.${name}: sandbox.bindWorkingDirectory = false is incompatible with sandbox.extraBinds.perDir. Per-directory isolation requires the working directory to be detected.";
+    message = "cloister.sandboxes.${name}: sandbox.bindWorkingDirectory = false is incompatible with sandbox.state.projectDirs. Per-project state requires the working directory to be detected.";
+  }
+  {
+    assertion = invalidBindEntries == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.readOnly/readWrite entries must use traversal-free paths; string entries must be home-relative descendants: ${builtins.toJSON invalidBindEntries}";
+  }
+  {
+    assertion = invalidStateBases == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.state base directories must be absolute traversal-free host paths: ${lib.concatStringsSep ", " invalidStateBases}";
+  }
+  {
+    assertion = invalidStatePaths == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.state paths must be home-relative descendants without traversal: ${lib.concatStringsSep ", " invalidStatePaths}";
+  }
+  {
+    assertion = isAbsoluteTraversalFreeHostPath sCfg.sandbox.copyBase;
+    message = "cloister.sandboxes.${name}: sandbox.copyBase must be an absolute traversal-free host path";
+  }
+  {
+    assertion = invalidCopySources == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.copies src paths must be absolute traversal-free host paths: ${
+      lib.concatMapStringsSep ", " (cf: cf.src) invalidCopySources
+    }";
   }
   {
     assertion = builtins.all (
       bind: bind.dest != "" && !lib.hasPrefix "/" bind.dest && normalizeCopyDest bind.dest == bind.dest
-    ) sCfg.sandbox.extraBinds.managedFileBind;
-    message = "cloister.sandboxes.${name}: all extraBinds.managedFileBind dest paths must be home-relative descendant paths without traversal";
+    ) (builtins.filter (entry: !builtins.isString entry) sCfg.sandbox.managed);
+    message = "cloister.sandboxes.${name}: all attr-form sandbox.managed dest paths must be home-relative descendant paths without traversal";
   }
   {
     assertion = builtins.all (
       cf: lib.hasPrefix "$HOME/" (normalizeCopyDest cf.dest)
-    ) sCfg.sandbox.copyFiles;
-    message = "cloister.sandboxes.${name}: all copyFiles dest paths must start with $HOME/ (after normalization)";
+    ) sCfg.sandbox.copies;
+    message = "cloister.sandboxes.${name}: all sandbox.copies dest paths must start with $HOME/ (after normalization)";
   }
   (
     let
       invalidModes = builtins.filter (
         cf: builtins.match "^[0-7]{3,4}$" cf.mode == null
-      ) sCfg.sandbox.copyFiles;
+      ) sCfg.sandbox.copies;
     in
     {
       assertion = invalidModes == [ ];
-      message = "cloister.sandboxes.${name}: copyFiles contains invalid mode values: ${
+      message = "cloister.sandboxes.${name}: sandbox.copies contains invalid mode values: ${
         lib.concatMapStringsSep ", " (cf: "'${cf.mode}' (for ${cf.dest})") invalidModes
       }. Modes must be 3 or 4 octal digits (e.g. '0644', '755').";
     }
@@ -177,7 +229,7 @@ in
   }
   {
     assertion = unsafePaths == [ ];
-    message = "cloister.sandboxes.${name}: bind/copy/dir/tmpfs/symlink/env paths cannot contain variable expansions ($) or newlines: ${lib.concatStringsSep ", " unsafePaths}";
+    message = "cloister.sandboxes.${name}: sandbox path and environment keys cannot contain unsafe variable expansions ($) or newlines: ${lib.concatStringsSep ", " unsafePaths}";
   }
   {
     assertion = sCfg.gui.desktopEntry == null || guiEnabled;

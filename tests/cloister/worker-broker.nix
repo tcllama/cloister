@@ -155,7 +155,7 @@ checks.mkCheck "test-cloister-worker-broker" [
   )
   (checks.expectAssertionMessage "worker broker delegated mount paths reject unsafe expansions"
     unsafeDelegatedMountPath.assertions
-    "cannot contain variable expansions ($) or newlines"
+    "cannot contain unsafe variable expansions ($) or newlines"
   )
   (checks.expectAssertionMessage "worker broker delegated mount paths must be absolute host paths"
     relativeDelegatedMountPath.assertions
@@ -183,11 +183,11 @@ checks.mkCheck "test-cloister-worker-broker" [
   )
   (checks.expectAssertionMessage "worker broker delegated mount keys reject variable expansions"
     unsafeDelegatedMountKey.assertions
-    "cannot contain variable expansions ($) or newlines"
+    "cannot contain unsafe variable expansions ($) or newlines"
   )
   (checks.expectAssertionMessage "worker broker delegated mount keys reject newlines"
     newlineDelegatedMountKey.assertions
-    "cannot contain variable expansions ($) or newlines"
+    "cannot contain unsafe variable expansions ($) or newlines"
   )
   (checks.expectAssertionMessage "worker broker generated launchers cannot collide with aliases"
     aliasCollision.assertions

@@ -80,16 +80,6 @@ let
         shell.hostConfig = false;
         network.enable = true;
         network.namespace = "dev";
-        sandbox.binds.ro = [
-          {
-            src = "/etc/passwd";
-            dest = "/etc/passwd";
-          }
-          {
-            src = "/etc/group";
-            dest = "/etc/group";
-          }
-        ];
         workerBroker = {
           profiles = {
             local = {

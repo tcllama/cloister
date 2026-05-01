@@ -14,8 +14,8 @@ let
       enable = true;
       sandboxes.dev = {
         sandbox = {
-          extraBinds.perDir."/ephemeral" = [ ".cache/nvim" ];
-          copyFiles = [
+          state.projectDirs."/ephemeral" = [ ".cache/nvim" ];
+          copies = [
             {
               src = "/host/source/app.conf";
               dest = "/home/tester/.config/app.conf";
@@ -36,12 +36,22 @@ let
       enable = true;
       sandboxes.dev = {
         shell.hostConfig = false;
-        sandbox.extraBinds = {
-          required.ro = [ ".bashrc" ];
-          optional.ro = [ ".zshrc" ];
-          required.rw = [ ".cache/app" ];
-          optional.rw = [ ".local/share/app" ];
-          managedFile = [
+        sandbox = {
+          readOnly = [
+            ".bashrc"
+            {
+              src = ".zshrc";
+              optional = true;
+            }
+          ];
+          readWrite = [
+            ".cache/app"
+            {
+              src = ".local/share/app";
+              optional = true;
+            }
+          ];
+          managed = [
             "app/config.toml"
             "hm/app.ini"
             ".gitignore"
@@ -56,13 +66,15 @@ let
 
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds = {
-        dir."/persist" = [
-          ".cache/app"
-          ".config/app"
-        ];
-        file."/persist" = [ ".local/state/app/history" ];
-        managedFile = [ "app/dir/settings.json" ];
+      sandboxes.dev.sandbox = {
+        state = {
+          dirs."/persist" = [
+            ".cache/app"
+            ".config/app"
+          ];
+          files."/persist" = [ ".local/state/app/history" ];
+        };
+        managed = [ "app/dir/settings.json" ];
       };
     };
   };
@@ -73,9 +85,9 @@ let
 
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds = {
-        perDir."/ephemeral" = [ ".config/opencode" ];
-        managedFile = [
+      sandboxes.dev.sandbox = {
+        state.projectDirs."/ephemeral" = [ ".config/opencode" ];
+        managed = [
           "opencode/tui.json"
           "opencode/opencode.json"
         ];
@@ -86,9 +98,9 @@ let
   explicitManagedFileBindEval = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds = {
-        perDir."/ephemeral" = [ ".config/opencode" ];
-        managedFileBind = [
+      sandboxes.dev.sandbox = {
+        state.projectDirs."/ephemeral" = [ ".config/opencode" ];
+        managed = [
           {
             src = managedXdgSource;
             dest = ".config/opencode/tui.json";
@@ -112,7 +124,7 @@ let
       enable = true;
       sandboxes.dev = {
         shell.hostConfig = false;
-        sandbox.extraBinds.managedFile = [
+        sandbox.managed = [
           "app/exact"
           "app/prefix"
           "hm-only"
@@ -130,7 +142,7 @@ let
       enable = true;
       sandboxes.dev = {
         shell.hostConfig = false;
-        sandbox.extraBinds.managedFile = [ "app" ];
+        sandbox.managed = [ "app" ];
       };
     };
   };
@@ -139,18 +151,30 @@ let
     cloister = {
       enable = true;
       sandboxes.dev.sandbox = {
-        copyFileBase = "/var/lib/cloister-copy";
-        extraBinds.perDir = {
+        state.projectDirs = {
           "/var/lib/cloister-per-dir" = [ ".cache/custom" ];
           "/var/lib/cloister-worktrees" = [ ".local/worktrees/project" ];
         };
-        copyFiles = [
+        copyBase = "/var/lib/cloister-copy";
+        copies = [
           {
             src = "/host/source/custom.conf";
             dest = "/home/tester/.config/custom.conf";
           }
         ];
       };
+    };
+  };
+
+  copyHomeDestEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.copies = [
+        {
+          src = "/host/source/home.conf";
+          dest = "$HOME/.config/home.conf";
+        }
+      ];
     };
   };
 
@@ -170,7 +194,7 @@ let
   missingManagedFile = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds.managedFile = [ "missing/path" ];
+      sandboxes.dev.sandbox.managed = [ "missing/path" ];
     };
   };
 
@@ -179,7 +203,7 @@ let
       enable = true;
       sandboxes.dev.sandbox = {
         bindWorkingDirectory = false;
-        extraBinds.perDir."/ephemeral" = [ ".cache/nvim" ];
+        state.projectDirs."/ephemeral" = [ ".cache/nvim" ];
       };
     };
   };
@@ -189,7 +213,7 @@ let
       enable = true;
       sandboxes.dev.sandbox = {
         bindWorkingDirectory = false;
-        extraBinds.perDir."/ephemeral" = [ ];
+        state.projectDirs."/ephemeral" = [ ];
       };
     };
   };
@@ -197,7 +221,7 @@ let
   duplicatePerDirDest = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds.perDir = {
+      sandboxes.dev.sandbox.state.projectDirs = {
         "/ephemeral" = [ ".cache/shared" ];
         "/local/worktrees" = [ ".cache/shared" ];
       };
@@ -207,23 +231,13 @@ let
   invalidCopyMode = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.copyFiles = [
+      sandboxes.dev.sandbox.copies = [
         {
           src = "/host/source/app.conf";
           dest = "/home/tester/.config/app.conf";
           mode = "64x";
         }
       ];
-    };
-  };
-
-  dirTmpfsOverlapEval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox = {
-        dirs = [ "/shared" ];
-        tmpfs = [ "/shared" ];
-      };
     };
   };
 
@@ -237,32 +251,14 @@ let
   duplicateBindDest = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.binds.ro = [
+      sandboxes.dev.sandbox.readOnly = [
         {
           src = "/host/one";
           dest = "/sandbox/shared";
-          try = false;
         }
         {
           src = "/host/two";
           dest = "/sandbox/shared";
-          try = false;
-        }
-      ];
-    };
-  };
-
-  duplicateSymlink = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.sandbox.symlinks = [
-        {
-          target = "/target/one";
-          link = "/shared-link";
-        }
-        {
-          target = "/target/two";
-          link = "/shared-link";
         }
       ];
     };
@@ -273,7 +269,7 @@ let
 
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds.managedFile = [
+      sandboxes.dev.sandbox.managed = [
         "app/config.toml"
         "app/config.toml"
       ];
@@ -283,7 +279,7 @@ let
   duplicateManagedFileBindDest = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds.managedFileBind = [
+      sandboxes.dev.sandbox.managed = [
         {
           src = managedXdgSource;
           dest = ".config/app/config.toml";
@@ -306,7 +302,40 @@ let
   unsafePath = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.extraBinds.required.ro = [ "$(pwd)" ];
+      sandboxes.dev.sandbox.readOnly = [ "$(pwd)" ];
+    };
+  };
+
+  bindTraversal = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.readOnly = [ "../secrets" ];
+    };
+  };
+
+  stateTraversal = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.state.dirs."/persist" = [ "../shared" ];
+    };
+  };
+
+  copyBaseTraversal = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.copyBase = "/var/lib/../tmp";
+    };
+  };
+
+  copySourceTraversal = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.copies = [
+        {
+          src = "/host/../source/app.conf";
+          dest = "/home/tester/.config/app.conf";
+        }
+      ];
     };
   };
 
@@ -327,7 +356,7 @@ let
   copyOutsideHome = hm {
     cloister = {
       enable = true;
-      sandboxes.dev.sandbox.copyFiles = [
+      sandboxes.dev.sandbox.copies = [
         {
           src = "/host/source/app.conf";
           dest = "/etc/app.conf";
@@ -354,6 +383,7 @@ let
   multiPerDirConfig = multiPerDirEval.config.cloister._internal.sandboxConfigs.dev;
   multiPerDirCopySpec = builtins.head multiPerDirConfig.copy_files;
   multiPerDirDynamicBinds = builtins.toJSON multiPerDirConfig.dynamic_binds;
+  copyHomeDestSpec = builtins.head copyHomeDestEval.config.cloister._internal.sandboxConfigs.dev.copy_files;
   strictHomePolicyConfig = strictHomePolicyEval.config.cloister._internal.sandboxConfigs.dev;
   emptyPerDirBucketConfig = emptyPerDirBucketEval.config.cloister._internal.sandboxConfigs.dev;
   gitConfig = gitEval.config.cloister._internal.sandboxConfigs.dev;
@@ -373,7 +403,7 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectContains "per-dir bind uses DIR_HASH" "$DIR_HASH/.cache/nvim" (
     builtins.toJSON sandboxConfig.dynamic_binds
   ))
-  (checks.expectEq "copyFiles host dest rendered"
+  (checks.expectEq "copies host dest rendered"
     "/home/tester/.local/state/cloister/cloister/dev/.config/app.conf"
     copySpec.host_dest
   )
@@ -455,9 +485,6 @@ checks.mkCheck "test-cloister-sandbox-core" [
     "/var/lib/cloister-per-dir" = [ ".cache/custom" ];
     "/var/lib/cloister-worktrees" = [ ".local/worktrees/project" ];
   } multiPerDirConfig.per_dir)
-  (checks.expectEq "custom copyFileBase is rendered" "/var/lib/cloister-copy"
-    multiPerDirConfig.copy_file_base
-  )
   (checks.expectContains "first per-dir base feeds dynamic bind source"
     "/var/lib/cloister-per-dir/$DIR_HASH/.cache/custom"
     multiPerDirDynamicBinds
@@ -466,9 +493,16 @@ checks.mkCheck "test-cloister-sandbox-core" [
     "/var/lib/cloister-worktrees/$DIR_HASH/.local/worktrees/project"
     multiPerDirDynamicBinds
   )
-  (checks.expectEq "custom copyFileBase feeds copy host destination"
+  (checks.expectEq "custom copy base feeds copy host destination"
     "/var/lib/cloister-copy/cloister/dev/.config/custom.conf"
     multiPerDirCopySpec.host_dest
+  )
+  (checks.expectEq "copies accept HOME-relative destinations"
+    "/home/tester/.local/state/cloister/cloister/dev/.config/home.conf"
+    copyHomeDestSpec.host_dest
+  )
+  (checks.expectEq "custom copy base is rendered for runtime validation" "/var/lib/cloister-copy"
+    multiPerDirConfig.copy_file_base
   )
   (checks.expectEq "strict home policy toggle is rendered" false
     strictHomePolicyConfig.enforce_strict_home_policy
@@ -487,7 +521,7 @@ checks.mkCheck "test-cloister-sandbox-core" [
     builtins.toJSON gitConfig.dynamic_binds
   ))
   (checks.expectAssertionMessage "per-dir requires bindWorkingDirectory" invalidPerDir.assertions
-    "sandbox.bindWorkingDirectory = false is incompatible with sandbox.extraBinds.perDir"
+    "sandbox.bindWorkingDirectory = false is incompatible with sandbox.state.projectDirs"
   )
   (checks.expectEq "empty per-dir buckets are dropped from config" { }
     emptyPerDirBucketConfig.per_dir
@@ -499,22 +533,15 @@ checks.mkCheck "test-cloister-sandbox-core" [
     duplicatePerDirDest.assertions
     "duplicate bind mount destinations"
   )
-  (checks.expectAssertionMessage "copyFiles mode validation fails" invalidCopyMode.assertions
-    "copyFiles contains invalid mode values"
+  (checks.expectAssertionMessage "copies mode validation fails" invalidCopyMode.assertions
+    "sandbox.copies contains invalid mode values"
   )
-  (checks.expectAssertionMessage "dir and tmpfs overlap is rejected" dirTmpfsOverlapEval.assertions
-    "paths appear in both sandbox dirs and tmpfs"
-  )
-  (checks.expectAssertionMessage "copyFiles destination must stay inside home"
-    copyOutsideHome.assertions
-    "all copyFiles dest paths must start with $HOME/"
+  (checks.expectAssertionMessage "copies destination must stay inside home" copyOutsideHome.assertions
+    "all sandbox.copies dest paths must start with $HOME/"
   )
   (checks.expectAssertionMessage "duplicate bind destinations are rejected"
     duplicateBindDest.assertions
     "duplicate bind mount destinations"
-  )
-  (checks.expectAssertionMessage "duplicate symlinks are rejected" duplicateSymlink.assertions
-    "duplicate symlink destinations"
   )
   (checks.expectAssertionMessage "duplicate managed files are rejected"
     duplicateManagedFile.assertions
@@ -528,7 +555,19 @@ checks.mkCheck "test-cloister-sandbox-core" [
     "computed and cannot be overridden"
   )
   (checks.expectAssertionMessage "unsafe path expansion is rejected" unsafePath.assertions
-    "cannot contain variable expansions ($) or newlines"
+    "cannot contain unsafe variable expansions ($) or newlines"
+  )
+  (checks.expectAssertionMessage "readOnly traversal is rejected" bindTraversal.assertions
+    "sandbox.readOnly/readWrite entries must use traversal-free paths"
+  )
+  (checks.expectAssertionMessage "state traversal is rejected" stateTraversal.assertions
+    "sandbox.state paths must be home-relative descendants without traversal"
+  )
+  (checks.expectAssertionMessage "copyBase traversal is rejected" copyBaseTraversal.assertions
+    "sandbox.copyBase must be an absolute traversal-free host path"
+  )
+  (checks.expectAssertionMessage "copy source traversal is rejected" copySourceTraversal.assertions
+    "sandbox.copies src paths must be absolute traversal-free host paths"
   )
   (checks.expectAssertionMessage "invalid passthrough env names are rejected"
     blockedPassthrough.assertions
@@ -538,5 +577,5 @@ checks.mkCheck "test-cloister-sandbox-core" [
     blockedPassthrough.assertions
     "cannot include computed/managed keys"
   )
-  (checks.expectFailure "missing managedFile entries fail evaluation" missingManagedFile.config.cloister._internal.sandboxConfigs.dev.static_bwrap_args)
+  (checks.expectFailure "missing managed entries fail evaluation" missingManagedFile.config.cloister._internal.sandboxConfigs.dev.static_bwrap_args)
 ]

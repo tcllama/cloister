@@ -25,7 +25,12 @@ let
             enable = true;
             username = "guest";
           };
-          extraBinds.optional.ro = [ ".gitconfig" ];
+          readOnly = [
+            {
+              src = ".gitconfig";
+              optional = true;
+            }
+          ];
         };
       };
     };
@@ -72,7 +77,7 @@ let
           filterTimeoutSeconds = 7;
         };
         git.enable = true;
-        sandbox.devBinds = [
+        sandbox.devices = [
           "/dev/input/js0"
           "/dev/kvm"
         ];

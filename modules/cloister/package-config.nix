@@ -12,6 +12,8 @@
   sandboxHome,
   seccompFilter,
   allDirs,
+  internalTmpfs,
+  allSymlinks,
   managedFileDirsOverlapping,
   managedFileDirOverlap,
   noHostConfigEnv,
@@ -302,7 +304,7 @@ let
       PATH = "${lib.makeBinPath [ workerBrokerLauncherPackage ]}:${baseEnvAttrs.PATH}";
     };
 
-  symlinkTargets = map (entry: entry.target) (sCfg.sandbox.symlinks ++ sCfg.sandbox.extraSymlinks);
+  symlinkTargets = map (entry: entry.target) allSymlinks;
 
   storeInputs = lib.unique (
     builtins.filter (p: p != null) (
@@ -362,7 +364,7 @@ let
       sandbox_home = if anonymize then sandboxHome else config.home.homeDirectory;
       seccomp_filter_path = if seccompFilter != "" then seccompFilter else null;
       per_dir = perDirBuckets;
-      copy_file_base = sCfg.sandbox.copyFileBase;
+      copy_file_base = sCfg.sandbox.copyBase;
       netns_helper_path =
         if sCfg.network.namespace != null then "/run/wrappers/bin/cloister-netns" else null;
       git_path = "${pkgs.git}/bin/git";
@@ -375,8 +377,8 @@ let
             "/home"
             sandboxHome
           ]);
-        inherit (sCfg.sandbox) tmpfs;
-        symlinks = sCfg.sandbox.symlinks ++ sCfg.sandbox.extraSymlinks;
+        tmpfs = internalTmpfs;
+        symlinks = allSymlinks;
         binds = {
           ro = staticRoBinds;
           rw = staticRwBinds;
@@ -387,7 +389,7 @@ let
 
       passthrough_env = sCfg.sandbox.passthroughEnv;
       disallowed_paths = sCfg.sandbox.disallowedPaths;
-      dev_binds = sCfg.sandbox.devBinds;
+      dev_binds = sCfg.sandbox.devices;
 
       dir_mkdirs = dirMkdirSpecs;
       file_mkdirs = fileMkdirSpecs;

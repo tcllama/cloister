@@ -1,4 +1,4 @@
-# Managed file resolution: converts managedFile keys into bind mount specs
+# Managed file resolution: converts sandbox.managed keys into bind mount specs
 # by looking them up in xdg.configFile and home.file.
 {
   lib,
@@ -22,7 +22,7 @@ rec {
     if resolved != [ ] then
       resolved
     else
-      throw "cloister.sandbox.extraBinds.managedFile: '${key}' not found in xdg.configFile or home.file";
+      throw "cloister.sandbox.managed: '${key}' not found in xdg.configFile or home.file";
 
   resolveConfigEntryIfPresent =
     key:

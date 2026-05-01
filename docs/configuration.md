@@ -71,7 +71,7 @@ cloister.sandboxes.editor = {
   sandbox = {
     nixStore.mode = "image-store";
 
-    extraBinds.managedFile = [ "helix/languages.toml" ];
+    managed = [ "helix/languages.toml" ];
   };
 };
 ```
@@ -185,7 +185,7 @@ cloister.sandboxes.dev.init.text = ''
 
 ## Paths and Environment Variables
 
-Cloister strictly disallows bash environment variable expansions (like `$HOME`, `$XDG_RUNTIME_DIR`, or `$USER`) in host-side path options such as `sandbox.extraBinds.perDir`, `sandbox.binds.*.src`, `sandbox.copyFiles.*.src`, symlink paths, device binds, and similar values. This is a security measure to prevent shell injection and path evaluation vulnerabilities during wrapper script execution.
+Cloister strictly disallows bash environment variable expansions (like `$HOME`, `$XDG_RUNTIME_DIR`, or `$USER`) in host-side path options such as `sandbox.state.projectDirs`, `sandbox.readOnly` / `sandbox.readWrite` attr sources, `sandbox.copyBase`, `sandbox.copies.*.src`, device paths, and similar values. This is a security measure to prevent shell injection and path evaluation vulnerabilities during wrapper script execution.
 
 Instead of bash variables in host paths, use **Nix-native path evaluations**. Since this module is configured within `home-manager`, you have full access to your home directory, runtime directories, and config paths through `config`.
 
@@ -193,8 +193,8 @@ Instead of bash variables in host paths, use **Nix-native path evaluations**. Si
 
 ```nix
 cloister.sandboxes.dev.sandbox = {
-  extraBinds.perDir."$HOME/.local/state/cloister" = [ ".cache/nix" ];
-  copyFiles = [
+  state.projectDirs."$HOME/.local/state/cloister" = [ ".cache/nix" ];
+  copies = [
     {
       src = "$XDG_CONFIG_HOME/task/taskrc";
       dest = "$HOME/.config/task/taskrc";
@@ -204,7 +204,7 @@ cloister.sandboxes.dev.sandbox = {
 };
 ```
 
-This fails because `extraBinds.perDir` keys and `copyFiles.*.src` are host-side paths. The `copyFiles.*.dest` value shown here is sandbox-side and is valid; see the note below.
+This fails because `state.projectDirs` keys and `copies.*.src` are host-side paths. The `copies.*.dest` value shown here is sandbox-side and is valid; see the note below.
 
 **✅ Correct (Nix-native host pathing):**
 
@@ -213,8 +213,8 @@ This fails because `extraBinds.perDir` keys and `copyFiles.*.src` are host-side 
 { config, pkgs, ... }:
 
 cloister.sandboxes.dev.sandbox = {
-  extraBinds.perDir."${config.home.homeDirectory}/.local/state/cloister" = [ ".cache/nix" ];
-  copyFiles = [
+  state.projectDirs."${config.home.homeDirectory}/.local/state/cloister" = [ ".cache/nix" ];
+  copies = [
     {
       src = "${config.xdg.configHome}/task/taskrc";
       dest = "${config.home.homeDirectory}/.config/task/taskrc";
@@ -224,7 +224,7 @@ cloister.sandboxes.dev.sandbox = {
 };
 ```
 
-`copyFiles.*.dest` is sandbox-side and must resolve under the sandbox home. It may be written as `$HOME/<path>` or as `${config.home.homeDirectory}/<path>`; Cloister normalizes the latter to `$HOME/<path>` internally so anonymized sandboxes can remap it to `/home/<username>`.
+`copies.*.dest` is sandbox-side and must resolve under the sandbox home. It may be written as `$HOME/<path>` or as `${config.home.homeDirectory}/<path>`; Cloister normalizes the latter to `$HOME/<path>` internally so anonymized sandboxes can remap it to `/home/<username>`.
 
 ### Common Nix replacements for host paths:
 
@@ -234,7 +234,7 @@ cloister.sandboxes.dev.sandbox = {
 - `$XDG_STATE_HOME` ➔ `config.xdg.stateHome`
 - `$XDG_CACHE_HOME` ➔ `config.xdg.cacheHome`
 
-> **Note:** The `dest` paths for home-relative extra binds (`sandbox.extraBinds.required.rw`, `sandbox.extraBinds.optional.ro`, etc.) are implicitly relative to the sandbox home and do not require `$HOME` prefixes.
+> **Note:** String entries in `sandbox.readOnly` and `sandbox.readWrite`, plus state/managed destinations, are home-relative and do not require `$HOME` prefixes.
 
 ## Registry
 
@@ -279,46 +279,43 @@ Outside wrapping is installed through the matching Home Manager shell module. En
 
 ## State persistence
 
-By default, the sandbox is ephemeral - only the working directory survives. To persist tool state (caches, history, databases), declare bind mounts using `sandbox.extraBinds`:
+By default, the sandbox is ephemeral - only the working directory survives. Use semantic sandbox buckets to declare host binds and persisted state:
 
 ```nix
-cloister.sandboxes.dev.sandbox.extraBinds = {
-  # Read-write home-relative paths (must exist)
-  required.rw = [ ".local/share/atuin" ];
+cloister.sandboxes.dev.sandbox = {
+  # Host-home paths bound directly into the sandbox.
+  readOnly = [
+    ".config/starship.toml"
+    { src = ".cache/bat"; optional = true; }
+  ];
+  readWrite = [
+    ".local/share/atuin"
+    { src = ".cargo/registry"; optional = true; }
+  ];
 
-  # Read-write home-relative paths (ok if missing)
-  optional.rw = [ ".cargo/registry" ];
+  state = {
+    # Volume-backed directories: {base}/cloister/{name}/{path} -> $HOME/{path}
+    dirs."/persist" = [ ".local/share/notes" ];
 
-  # Read-only home-relative paths (ok if missing)
-  optional.ro = [ ".config/starship.toml" ];
+    # Volume-backed files use the same path scheme but are touch'd before bwrap.
+    files."/persist" = [ ".local/share/myapp/config.db" ];
 
-  # Volume-backed directories: key is a base directory on the host,
-  # values are home-relative paths inside the sandbox.
-  # Source: {key}/cloister/{name}/{path} -> dest: $HOME/{path}
-  # Directories are created automatically.
-  dir."/persist" = [ ".local/share/notes" ];
-
-  # Volume-backed files: same path scheme as dir, but creates
-  # individual files instead of directories (touch'd before bwrap).
-  file."/persist" = [ ".local/share/myapp/config.db" ];
-
-  # Per-directory state (isolated by a hash of the sandbox directory path)
-  # Source: {base}/$HASH/{path} -> dest: $HOME/{path}
-  perDir = {
-    "/ephemeral" = [ ".local/state/cargo-target" ];
-    "/local/worktrees" = [ ".local/worktrees/project" ];
+    # Per-project state is isolated by a hash of the working directory path.
+    projectDirs = {
+      "/ephemeral" = [ ".local/state/cargo-target" ];
+      "/local/worktrees" = [ ".local/worktrees/project" ];
+    };
   };
 };
 ```
 
 ### Writable config file copies
 
-If you need a writable copy of a host configuration file inside the sandbox (e.g. to modify it without affecting the host), you can use `copyFiles`:
+If you need a writable copy of a host configuration file inside the sandbox (e.g. to modify it without affecting the host), use `sandbox.copies`:
 
 ```nix
 cloister.sandboxes.dev.sandbox = {
-  copyFileBase = "/local/ephemeral"; # optional, defaults to "${config.xdg.stateHome}/cloister"
-  copyFiles = [
+  copies = [
     {
       src = "${config.home.homeDirectory}/.config/task/home-manager-taskrc";
       dest = "${config.home.homeDirectory}/.config/task/taskrc";
@@ -326,6 +323,9 @@ cloister.sandboxes.dev.sandbox = {
       overwrite = false; # if false, only copies when dest doesn't exist
     }
   ];
+
+  # Optional; defaults to "${config.xdg.stateHome}/cloister".
+  copyBase = "/local/ephemeral";
 };
 ```
 
@@ -337,7 +337,7 @@ If `src` is missing or is not a regular file, sandbox startup fails immediately 
 If you manage config files through home-manager (`xdg.configFile`, `home.file`), you can bind their Nix store sources directly into the sandbox - read-only and tamper-proof:
 
 ```nix
-cloister.sandboxes.dev.sandbox.extraBinds.managedFile = [
+cloister.sandboxes.dev.sandbox.managed = [
   "bat"             # prefix - binds bat/config, bat/themes/*, etc.
   "gh"              # prefix - binds gh/config.yml
   "starship.toml"   # exact key
@@ -347,7 +347,7 @@ cloister.sandboxes.dev.sandbox.extraBinds.managedFile = [
 
 ### Explicit store-backed managed files
 
-If you want to bind files directly from the Nix store without managing them in Home Manager, use `extraBinds.managedFileBind`:
+If you want to bind files directly from the Nix store without managing them in Home Manager, use attr-form `sandbox.managed` entries:
 
 ```nix
 let
@@ -358,9 +358,9 @@ let
   ];
 in
 {
-  cloister.sandboxes.opencode.sandbox.extraBinds = {
-    perDir."/ephemeral" = [ ".config/opencode" ];
-    managedFileBind = map (relativePath: {
+  cloister.sandboxes.opencode.sandbox = {
+    state.projectDirs."/ephemeral" = [ ".config/opencode" ];
+    managed = map (relativePath: {
       src = opencodeAssetsDir + "/${relativePath}";
       dest = ".config/opencode/${relativePath}";
     }) opencodeFiles;
@@ -368,7 +368,7 @@ in
 }
 ```
 
-These binds are read-only and overlay correctly on top of `extraBinds.dir` and `extraBinds.perDir` mounts.
+These binds are read-only and overlay correctly on top of `state.dirs` and `state.projectDirs` mounts.
 
 ### Disabling working directory binding
 
@@ -377,16 +377,16 @@ App-specific sandboxes (like Discord or Chromium) don't need access to the host 
 ```nix
 cloister.sandboxes.discord.sandbox = {
   bindWorkingDirectory = false;
-  extraBinds.dir."/persist" = [
+  state.dirs."/persist" = [
     ".config/discord"
     ".cache/discord"
   ];
 };
 ```
 
-When `bindWorkingDirectory` is false, the sandbox skips directory detection entirely and starts in the sandbox home directory. This is incompatible with `extraBinds.perDir` (which requires a working directory hash).
+When `bindWorkingDirectory` is false, the sandbox skips directory detection entirely and starts in the sandbox home directory. This is incompatible with non-empty `state.projectDirs` (which requires a working directory hash).
 
-Each `extraBinds.perDir` key gets its own `manifest.json` and its own `${DIR_HASH}` namespace, so you can split ephemeral caches and reboot-persistent project state across different host roots.
+Each `state.projectDirs` key gets its own `manifest.json` and its own `${DIR_HASH}` namespace, so you can split ephemeral caches and reboot-persistent project state across different host roots.
 
 ## Security & isolation
 
@@ -558,10 +558,10 @@ Generates an XDG `.desktop` file so the sandbox appears in your app launcher. Se
 
 ### Device integrations
 
-Pass explicit device nodes with `sandbox.devBinds` when a sandbox needs direct device access:
+Pass explicit device nodes with `sandbox.devices` when a sandbox needs direct device access:
 
 ```nix
-cloister.sandboxes.dev.sandbox.devBinds = [ "/dev/input/js0" ];
+cloister.sandboxes.dev.sandbox.devices = [ "/dev/input/js0" ];
 ```
 
 Device paths are mounted with `--dev-bind`. Missing devices are warned about at runtime rather than failing startup.
@@ -744,26 +744,16 @@ See the sections above for usage examples and explanations.
 | `sandbox.nixStore.mode` | enum | `"host"` | How Cloister exposes `/nix/store`: bind the host store or a mounted immutable image store |
 | `sandbox.env` | attrsOf str | *(base vars)* | Environment variables inside sandbox |
 | `sandbox.passthroughEnv` | list of str | *(locale vars)* | Host env vars to pass through when set |
-| `sandbox.dirs` | list of str | *(system dirs)* | Directories to create inside the sandbox |
-| `sandbox.extraDirs` | list of str | `[]` | Additional directories appended to sandbox dirs |
-| `sandbox.tmpfs` | list of str | `["/tmp"]` | Tmpfs mounts inside the sandbox |
-| `sandbox.symlinks` | list of {target, link} | *(core shell and compatibility symlinks)* | Symlinks to create inside the sandbox |
-| `sandbox.extraSymlinks` | list of {target, link} | `[]` | Additional symlinks appended to sandbox symlinks |
-| `sandbox.binds.ro` | list of bind | *(system paths)* | Read-only bind mounts |
-| `sandbox.binds.rw` | list of bind | `[]` | Additional read-write bind mounts |
-| `sandbox.extraBinds.required.ro` | list of str | `[]` | Home-relative required read-only binds |
-| `sandbox.extraBinds.required.rw` | list of str | `[]` | Home-relative required read-write binds |
-| `sandbox.extraBinds.optional.ro` | list of str | `[]` | Home-relative optional read-only binds |
-| `sandbox.extraBinds.optional.rw` | list of str | `[]` | Home-relative optional read-write binds |
-| `sandbox.extraBinds.dir` | attrsOf (list of str) | `{}` | Volume-backed directory binds (auto-created) |
-| `sandbox.extraBinds.file` | attrsOf (list of str) | `{}` | Volume-backed file binds (auto-created) |
-| `sandbox.extraBinds.perDir` | attrsOf (list of str) | `{}` | Per-directory binds keyed by host base directory |
-| `sandbox.extraBinds.managedFile` | list of str | `[]` | Home-manager managed file keys bound read-only |
-| `sandbox.extraBinds.managedFileBind` | list of {src, dest} | `[]` | Explicit read-only file binds from Nix store or fixed paths |
+| `sandbox.readOnly` | list of str or {src, dest, optional} | `[]` | Read-only host path binds; string entries are home-relative |
+| `sandbox.readWrite` | list of str or {src, dest, optional} | `[]` | Read-write host path binds; string entries are home-relative |
+| `sandbox.managed` | list of str or {src, dest} | `[]` | Home Manager managed keys/prefixes or explicit read-only source binds |
+| `sandbox.state.dirs` | attrsOf (list of str) | `{}` | Volume-backed writable directories keyed by host base directory |
+| `sandbox.state.files` | attrsOf (list of str) | `{}` | Volume-backed writable files keyed by host base directory |
+| `sandbox.state.projectDirs` | attrsOf (list of str) | `{}` | Per-project writable directories keyed by host base directory |
 | `sandbox.enforceStrictHomePolicy` | bool | `true` | Prevent sandboxing home dirs and dot-dirs |
 | `sandbox.disallowedPaths` | list of str | `["/", "/root"]` | Paths disallowed as sandbox directory |
-| `sandbox.copyFileBase` | str | `"${config.xdg.stateHome}/cloister"` | Base directory on the host where copyFiles are stored |
-| `sandbox.copyFiles` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into the sandbox state; `src` must be a literal host path, `dest` must resolve under `$HOME`, and missing sources fail startup |
+| `sandbox.copyBase` | str | `${config.xdg.stateHome}/cloister` | Host base directory where `sandbox.copies` writable state is stored |
+| `sandbox.copies` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into sandbox state; `src` is a literal absolute host path and `dest` resolves under `$HOME` |
 | `sandbox.anonymize.enable` | bool | `false` | Present generic identity (username/hostname `ubuntu`, synthetic `/proc` files, blocked `/proc/sys`) |
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
 | `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |
@@ -809,7 +799,7 @@ See the sections above for usage examples and explanations.
 | `audio.pipewire.filters.control` | bool | `false` | Allow volume and mute changes on visible nodes |
 | `audio.pipewire.filters.routing` | bool | `false` | Allow default-device and stream-routing changes |
 | `audio.pipewire.dbus.enable` | bool | `true` | Let sandboxed PipeWire clients use D-Bus support when a filtered bus is available |
-| `sandbox.devBinds` | list of str | `[]` | Additional device paths for `--dev-bind` passthrough |
+| `sandbox.devices` | list of str | `[]` | Additional device paths for `--dev-bind` passthrough |
 | `registry.aliases` | attrsOf str | `{}` | Shell aliases |
 | `registry.functions` | attrsOf lines | `{}` | Shell functions |
 | `registry.commands` | list of str | `[]` | Commands to wrap outside sandbox |

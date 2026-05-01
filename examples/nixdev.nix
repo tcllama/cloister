@@ -8,7 +8,7 @@
 #  cl-nixdev nvim flake.nix              # edit a file directly
 #  nvim flake.nix                        # same, via host-side command wrapping
 #
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
   cloister.sandboxes.nixdev = {
     shell = {
@@ -52,23 +52,21 @@
 
     sandbox = {
       # Persistence
-      extraBinds = {
+      state = {
         # Per-user Nix state that should survive across sessions
-        required.rw = [ ".local/state/nix" ];
-
-        # Editor state — optional, survives across sessions if present
-        optional.rw = [
+        dirs."${config.xdg.stateHome}" = [
+          ".local/state/nix"
           ".local/share/nvim"
           ".local/state/nvim"
         ];
 
         # Per-directory state — each config repo gets its own nix eval cache
-        perDir."/ephemeral" = [ ".cache/nix" ];
+        projectDirs."/ephemeral" = [ ".cache/nix" ];
       };
 
       # Home-manager managed config files
       # Uncomment entries that match your xdg.configFile / home.file setup
-      # extraBinds.managedFile = [
+      # managed = [
       #  "nvim"           # neovim config tree
       #  "starship.toml"  # prompt config
       #  "bat"            # bat theme/config

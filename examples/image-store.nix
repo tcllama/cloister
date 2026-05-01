@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
   cloister.sandboxes.editor-dev = {
     shell.name = "zsh";
@@ -18,14 +18,12 @@
     sandbox = {
       nixStore.mode = "image-store";
 
-      extraBinds = {
-        optional.rw = [
-          ".local/share/helix"
-          ".cache/helix"
-        ];
+      state.dirs."${config.xdg.stateHome}" = [
+        ".local/share/helix"
+        ".cache/helix"
+      ];
 
-        managedFile = [ "helix/languages.toml" ];
-      };
+      managed = [ "helix/languages.toml" ];
 
       env = {
         EDITOR = "hx";

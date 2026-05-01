@@ -284,20 +284,204 @@ let
         CLOISTER_SHELL_INIT = "${sandboxShellHookFile}";
       };
 
-      # --- Resolution: convert semantic extraBinds → [{src, dest, try}] ---
+      # --- Internal low-level sandbox primitives ---
 
-      mkHomeBinds =
-        try: paths:
-        map (p: {
-          src = "$HOME/${p}";
-          dest = null;
-          inherit try;
-        }) paths;
+      pipewireDbusEnabled = sCfg.dbus.enable && sCfg.audio.pipewire.dbus.enable;
+      pipewireNativeEnabled = sCfg.audio.pipewire.enable && !sCfg.audio.pipewire.pulseOnly;
+      fileChooserPortalEnabled = sCfg.dbus.portal.fileChooser;
 
-      requiredRo = mkHomeBinds false sCfg.sandbox.extraBinds.required.ro;
-      optionalRo = mkHomeBinds true sCfg.sandbox.extraBinds.optional.ro;
-      requiredRw = mkHomeBinds false sCfg.sandbox.extraBinds.required.rw;
-      optionalRw = mkHomeBinds true sCfg.sandbox.extraBinds.optional.rw;
+      pipewireContextProperties =
+        if pipewireDbusEnabled then
+          ""
+        else
+          ''
+            context.properties = {
+                support.dbus = false
+            }
+          '';
+
+      pipewireClientConf = pkgs.writeText "cloister-pipewire-client.conf" ''
+        # Cloister: disable D-Bus-dependent SPA support for sandboxed PipeWire clients
+        ${pipewireContextProperties}
+      '';
+
+      customShellDest = "${
+        if anonymize then sandboxHome else config.home.homeDirectory
+      }/.config/cl-shell/${name}/custom";
+      customShellBinds =
+        let
+          mkCustomBind = destName: srcPath: {
+            src = toString srcPath;
+            dest = "${customShellDest}/${destName}";
+            try = false;
+          };
+          rcFields = [
+            "zshenv"
+            "zshrc"
+            "bashenv"
+            "bashrc"
+            "profile"
+          ];
+        in
+        lib.concatMap (
+          field:
+          lib.optional (sCfg.shell.customRcPath.${field} != null) (
+            mkCustomBind field sCfg.shell.customRcPath.${field}
+          )
+        ) rcFields;
+
+      mkInternalBind =
+        {
+          src,
+          dest ? null,
+          try ? false,
+        }:
+        {
+          inherit src dest try;
+        };
+
+      internalDirs = [
+        "/nix"
+        "/nix/store"
+        "/var"
+        "/run"
+        "/run/current-system/sw/bin"
+        "/usr/bin"
+        "/bin"
+        "/etc/ssl"
+        "/etc/ssl/certs"
+      ]
+      ++ lib.optionals (customShellBinds != [ ]) [
+        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/cl-shell/${name}"
+      ]
+      ++ lib.optionals fileChooserPortalEnabled [
+        "/run/flatpak"
+        "/run/flatpak/doc"
+      ]
+      ++ lib.optionals pipewireNativeEnabled [
+        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/pipewire"
+        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/pipewire/client.conf.d"
+      ];
+
+      internalTmpfs = [ "/tmp" ];
+
+      internalSymlinks = [
+        {
+          target = "${pkgs.coreutils}/bin/env";
+          link = "/usr/bin/env";
+        }
+        {
+          target = "${pkgs.bash}/bin/bash";
+          link = "/bin/sh";
+        }
+        {
+          target = "${pkgs.bash}/bin/bash";
+          link = "/bin/bash";
+        }
+        {
+          target = "/bin/bash";
+          link = "/run/current-system/sw/bin/bash";
+        }
+        {
+          target = "pts/ptmx";
+          link = "/dev/ptmx";
+        }
+        {
+          target = "/etc/ssl/certs/ca-bundle.crt";
+          link = "/etc/ssl/certs/ca-certificates.crt";
+        }
+      ]
+      ++ shellLib.symlinks
+      ++ lib.optionals pipewireNativeEnabled [
+        {
+          target = "${pipewireClientConf}";
+          link = "${
+            if anonymize then sandboxHome else config.home.homeDirectory
+          }/.config/pipewire/client.conf.d/99-cloister.conf";
+        }
+      ];
+
+      internalRoBinds =
+        lib.filter (b: !(anonymize && (b.src == "/etc/passwd" || b.src == "/etc/group"))) [
+          (mkInternalBind { src = "/etc/passwd"; })
+          (mkInternalBind { src = "/etc/group"; })
+          (mkInternalBind {
+            src = "/etc/shells";
+            try = true;
+          })
+          (mkInternalBind (
+            if sCfg.network.namespace != null then
+              {
+                src = "/etc/netns/${sCfg.network.namespace}/hosts";
+                dest = "/etc/hosts";
+                try = true;
+              }
+            else
+              {
+                src = "/etc/hosts";
+                try = true;
+              }
+          ))
+          (mkInternalBind (
+            if sCfg.network.namespace != null then
+              {
+                src = "/etc/netns/${sCfg.network.namespace}/resolv.conf";
+                dest = "/etc/resolv.conf";
+                try = true;
+              }
+            else
+              {
+                src = "/etc/resolv.conf";
+                try = true;
+              }
+          ))
+          (mkInternalBind {
+            src = "/etc/ssh/ssh_known_hosts";
+            try = true;
+          })
+          (mkInternalBind {
+            src = "/etc/nix/nix.conf";
+            try = true;
+          })
+          (mkInternalBind (
+            if anonymize then
+              {
+                src = "${pkgs.tzdata}/share/zoneinfo/UTC";
+                dest = "/etc/localtime";
+              }
+            else
+              {
+                src = "/etc/localtime";
+                try = true;
+              }
+          ))
+          (mkInternalBind {
+            src = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+            dest = "/etc/ssl/certs/ca-bundle.crt";
+          })
+        ]
+        ++ customShellBinds;
+
+      # --- Resolution: convert semantic buckets → [{src, dest, try}] ---
+
+      normalizeBindEntry =
+        entry:
+        let
+          isString = builtins.isString entry;
+          rawSrc = if isString then entry else toString entry.src;
+          rawDest = if isString || entry.dest == null then null else entry.dest;
+          optional = if isString then false else entry.optional;
+          normalizeHome =
+            path: if lib.hasPrefix "/" path || lib.hasPrefix "$" path then path else "$HOME/${path}";
+        in
+        {
+          src = normalizeHome rawSrc;
+          dest = if rawDest == null then null else normalizeHome rawDest;
+          try = optional;
+        };
+
+      userRoBinds = map normalizeBindEntry sCfg.sandbox.readOnly;
+      userRwBinds = map normalizeBindEntry sCfg.sandbox.readWrite;
 
       mkBindsFromAttr =
         attr:
@@ -318,14 +502,17 @@ let
           lib.mapAttrsToList (base: paths: map (p: { path = "${base}/cloister/${name}/${p}"; }) paths) attr
         );
 
-      perDirBuckets = lib.filterAttrs (_: paths: paths != [ ]) sCfg.sandbox.extraBinds.perDir;
+      managedKeys = builtins.filter builtins.isString sCfg.sandbox.managed;
+      explicitManagedEntries = builtins.filter (entry: !builtins.isString entry) sCfg.sandbox.managed;
+
+      perDirBuckets = lib.filterAttrs (_: paths: paths != [ ]) sCfg.sandbox.state.projectDirs;
       perDirPaths = lib.concatLists (lib.attrValues perDirBuckets);
       workerBrokerDelegatedMounts = lib.concatMap (
         profile: builtins.attrValues profile.delegatedPerDirMounts
       ) (builtins.attrValues sCfg.workerBroker.profiles);
 
-      dirBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.dir;
-      fileBinds = mkBindsFromAttr sCfg.sandbox.extraBinds.file;
+      dirBinds = mkBindsFromAttr sCfg.sandbox.state.dirs;
+      fileBinds = mkBindsFromAttr sCfg.sandbox.state.files;
 
       perDirBinds = lib.concatLists (
         lib.mapAttrsToList (
@@ -355,26 +542,28 @@ let
         else
           normalized;
 
+      copyHostBase = sCfg.sandbox.copyBase;
+
       copyFileBinds = map (
         cf:
         let
           normalizedDest = normalizeCopyDest cf.dest;
         in
         {
-          src = "${sCfg.sandbox.copyFileBase}/cloister/${name}/${lib.removePrefix "$HOME/" normalizedDest}";
+          src = "${copyHostBase}/cloister/${name}/${lib.removePrefix "$HOME/" normalizedDest}";
           dest = normalizedDest;
           try = false;
         }
-      ) sCfg.sandbox.copyFiles;
+      ) sCfg.sandbox.copies;
 
-      resolvedExtraRo = requiredRo ++ optionalRo;
-      resolvedExtraRw = requiredRw ++ optionalRw ++ dirBinds ++ fileBinds ++ perDirBinds ++ copyFileBinds;
+      resolvedExtraRo = userRoBinds;
+      resolvedExtraRw = userRwBinds ++ dirBinds ++ fileBinds ++ perDirBinds ++ copyFileBinds;
 
       # Resolve $HOME in managed file dests to the correct sandbox-side home
       # directory at eval time, so they work with both anonymize on and off.
       managedFileHome = if anonymize then sandboxHome else config.home.homeDirectory;
-      resolvedManagedFileBinds = lib.concatMap resolveConfigEntry sCfg.sandbox.extraBinds.managedFile;
-      explicitManagedFileBinds = lib.concatMap resolveExplicitManagedBind sCfg.sandbox.extraBinds.managedFileBind;
+      resolvedManagedFileBinds = lib.concatMap resolveConfigEntry managedKeys;
+      explicitManagedFileBinds = lib.concatMap resolveExplicitManagedBind explicitManagedEntries;
       managedFileBinds = map (
         bind:
         bind
@@ -599,7 +788,7 @@ let
 
       allDests = map (p: normalizeDest (getDest p)) (
         remapBinds (
-          sCfg.sandbox.binds.ro
+          internalRoBinds
           ++ resolvedExtraRo
           ++ managedFileBinds
           ++ dbusBinds
@@ -608,7 +797,6 @@ let
           ++ shellConfigManagedFileBinds
           ++ shellConfigHostBinds
           ++ noHostConfigBinds
-          ++ sCfg.sandbox.binds.rw
           ++ resolvedExtraRw
           ++ sandboxDirBinds
           ++ portalRwBinds
@@ -622,11 +810,11 @@ let
       duplicateDests = findDuplicates allDests;
 
       # --- Overlapping dirs and tmpfs detection ---
-      allDirs = sCfg.sandbox.dirs ++ sCfg.sandbox.extraDirs ++ managedFileDirsNonOverlapping;
-      dirTmpfsOverlap = lib.intersectLists allDirs sCfg.sandbox.tmpfs;
+      allDirs = internalDirs ++ managedFileDirsNonOverlapping;
+      dirTmpfsOverlap = lib.intersectLists allDirs internalTmpfs;
 
       # --- Duplicate symlink link paths ---
-      allSymlinks = sCfg.sandbox.symlinks ++ sCfg.sandbox.extraSymlinks;
+      allSymlinks = internalSymlinks;
       allSymlinkLinks = map (s: s.link) allSymlinks;
       duplicateLinks = findDuplicates allSymlinkLinks;
 
@@ -636,28 +824,36 @@ let
       # --- Unsafe character assertion for user-provided paths ---
       userPaths =
         let
-          bindPaths = lib.concatMap (bind: [
-            bind.src
-            (if bind.dest != null then bind.dest else bind.src)
-          ]) (sCfg.sandbox.binds.ro ++ sCfg.sandbox.binds.rw);
-          dirPaths = sCfg.sandbox.dirs ++ sCfg.sandbox.extraDirs;
-          tmpfsPaths = sCfg.sandbox.tmpfs;
-          symlinkPaths = lib.concatMap (s: [
-            s.target
-            s.link
-          ]) (sCfg.sandbox.symlinks ++ sCfg.sandbox.extraSymlinks);
-          extraBindPaths =
-            sCfg.sandbox.extraBinds.required.ro
-            ++ sCfg.sandbox.extraBinds.required.rw
-            ++ sCfg.sandbox.extraBinds.optional.ro
-            ++ sCfg.sandbox.extraBinds.optional.rw
-            ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.dir)
-            ++ lib.concatLists (lib.attrValues sCfg.sandbox.extraBinds.file)
+          bindEntryPaths =
+            entry:
+            if builtins.isString entry then
+              [ entry ]
+            else
+              [ (toString entry.src) ] ++ lib.optional (entry.dest != null) entry.dest;
+          managedEntryPaths =
+            entry:
+            if builtins.isString entry then
+              [ entry ]
+            else
+              [
+                (toString entry.src)
+                entry.dest
+              ];
+          bindPaths = lib.concatMap bindEntryPaths (sCfg.sandbox.readOnly ++ sCfg.sandbox.readWrite);
+          statePaths =
+            lib.concatLists (lib.attrValues sCfg.sandbox.state.dirs)
+            ++ lib.concatLists (lib.attrValues sCfg.sandbox.state.files)
             ++ perDirPaths
-            ++ sCfg.sandbox.extraBinds.managedFile
-            ++ map (bind: toString bind.src) sCfg.sandbox.extraBinds.managedFileBind
-            ++ map (bind: bind.dest) sCfg.sandbox.extraBinds.managedFileBind;
-          copyFileSrcPaths = map (cf: cf.src) sCfg.sandbox.copyFiles;
+            ++ lib.attrNames sCfg.sandbox.state.dirs
+            ++ lib.attrNames sCfg.sandbox.state.files;
+          managedPaths = lib.concatMap managedEntryPaths sCfg.sandbox.managed;
+          copySrcPaths = map (cf: cf.src) sCfg.sandbox.copies;
+          unsafeCopyDestPaths = builtins.filter (
+            dest:
+            lib.hasInfix "\n" dest
+            || lib.hasInfix "\r" dest
+            || (lib.hasInfix "$" dest && !lib.hasPrefix "$HOME/" dest)
+          ) (map (cf: cf.dest) sCfg.sandbox.copies);
           workerBrokerKeyPaths = lib.concatMap (profile: lib.attrNames profile.delegatedPerDirMounts) (
             builtins.attrValues sCfg.workerBroker.profiles
           );
@@ -666,18 +862,17 @@ let
           ) workerBrokerDelegatedMounts;
         in
         bindPaths
-        ++ dirPaths
-        ++ tmpfsPaths
-        ++ symlinkPaths
-        ++ extraBindPaths
-        ++ copyFileSrcPaths
+        ++ statePaths
+        ++ managedPaths
+        ++ copySrcPaths
+        ++ unsafeCopyDestPaths
         ++ workerBrokerKeyPaths
         ++ workerBrokerPaths
         ++ lib.attrNames sCfg.sandbox.env
-        ++ sCfg.sandbox.devBinds
+        ++ sCfg.sandbox.devices
         ++ sCfg.sandbox.disallowedPaths
         ++ lib.attrNames perDirBuckets
-        ++ [ sCfg.sandbox.copyFileBase ];
+        ++ [ sCfg.sandbox.copyBase ];
 
       unsafePaths = builtins.filter (
         p: lib.hasInfix "$" p || lib.hasInfix "\n" p || lib.hasInfix "\r" p
@@ -729,6 +924,7 @@ let
           invalidPassthroughEnv
           guiEnabled
           normalizeCopyDest
+          normalizePath
           ;
         sandboxNames = builtins.attrNames cfg.sandboxes;
         hasPerDirBinds = perDirPaths != [ ];
@@ -766,7 +962,7 @@ let
       # Static binds: fully resolved at Nix eval time
       staticRoBinds = builtins.filter isStaticBind (
         remapBinds (
-          sCfg.sandbox.binds.ro
+          internalRoBinds
           ++ managedFileBindsNonOverlapping
           ++ guiBinds
           ++ shellConfigHostBinds
@@ -778,9 +974,7 @@ let
         )
       );
 
-      staticRwBinds = builtins.filter isStaticBind (
-        remapBinds (sCfg.sandbox.binds.rw ++ resolvedExtraRw ++ sandboxDirBinds)
-      );
+      staticRwBinds = builtins.filter isStaticBind (remapBinds (resolvedExtraRw ++ sandboxDirBinds));
 
       # Dynamic binds: need runtime variable substitution
       mkDynamicBind =
@@ -820,12 +1014,12 @@ let
 
       storeRootSources = lib.unique (
         map (b: b.src) (staticRoBinds ++ staticRwBinds ++ dynamicBindsList)
-        ++ map (cf: cf.src) sCfg.sandbox.copyFiles
+        ++ map (cf: cf.src) sCfg.sandbox.copies
       );
 
       # File operation specs for the compiled binary
-      dirMkdirSpecs = mkMkdirSpecsFromAttr sCfg.sandbox.extraBinds.dir;
-      fileMkdirSpecs = mkMkdirSpecsFromAttr sCfg.sandbox.extraBinds.file;
+      dirMkdirSpecs = mkMkdirSpecsFromAttr sCfg.sandbox.state.dirs;
+      fileMkdirSpecs = mkMkdirSpecsFromAttr sCfg.sandbox.state.files;
 
       copyFileSpecs = map (
         cf:
@@ -834,9 +1028,9 @@ let
         in
         {
           inherit (cf) src mode overwrite;
-          host_dest = "${sCfg.sandbox.copyFileBase}/cloister/${name}/${lib.removePrefix "$HOME/" normalizedDest}";
+          host_dest = "${copyHostBase}/cloister/${name}/${lib.removePrefix "$HOME/" normalizedDest}";
         }
-      ) sCfg.sandbox.copyFiles;
+      ) sCfg.sandbox.copies;
 
       pipewireSocketName =
         if sCfg.audio.pipewire.enable && !sCfg.audio.pipewire.pulseOnly then
@@ -861,6 +1055,8 @@ let
           sandboxHome
           seccompFilter
           allDirs
+          internalTmpfs
+          allSymlinks
           managedFileDirsOverlapping
           managedFileDirOverlap
           noHostConfigEnv

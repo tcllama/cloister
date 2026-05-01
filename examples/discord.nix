@@ -54,7 +54,7 @@
     # Persistence
     sandbox = {
       bindWorkingDirectory = false;
-      extraBinds.dir."${config.xdg.stateHome}" = [
+      state.dirs."${config.xdg.stateHome}" = [
         ".config/discord"
         ".cache/discord"
       ];
