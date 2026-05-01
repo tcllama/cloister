@@ -35,25 +35,6 @@ in
   # when we used lib.mkMerge over a dynamically-computed list.
   config = lib.mkIf config.cloister.enable {
 
-    # Per-sandbox init files (sourced inside the sandbox)
-    xdg.configFile =
-      let
-        cfg = config.cloister;
-      in
-      lib.mapAttrs' (
-        name: sCfg:
-        let
-          shellLib = shells.${sCfg.shell.name};
-        in
-        {
-          name = "${shellLib.configDir}/cloister-${name}.${shellLib.initExt}";
-          value.text = ''
-            ${sCfg.init.rendered}
-            ${sCfg.registry.rendered.inside}
-          '';
-        }
-      ) cfg.sandboxes;
-
     programs =
       let
         cfg = config.cloister;

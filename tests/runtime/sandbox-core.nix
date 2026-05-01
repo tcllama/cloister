@@ -71,23 +71,11 @@ pkgs.testers.runNixOSTest (_: {
 
             install -d -m 0700 -o ${hmUser} -g users /home/${hmUser}
             install -d -m 0700 -o ${hmUser} -g users /home/${hmUser}/.config
-            install -d -m 0700 -o ${hmUser} -g users /home/${hmUser}/.config/zsh
-
             cat > /home/${hmUser}/.zshenv <<'EOF'
             ${eval.config.programs.zsh.initContent}
             EOF
 
-            cat > /home/${hmUser}/.config/zsh/cloister-dev.zsh <<'EOF'
-            ${eval.config.xdg.configFile."zsh/cloister-dev.zsh".text}
-            EOF
-
-            cat > /home/${hmUser}/.config/zsh/cloister-sec.zsh <<'EOF'
-            ${eval.config.xdg.configFile."zsh/cloister-sec.zsh".text}
-            EOF
-
             chown ${hmUser}:users /home/${hmUser}/.zshenv
-            chown ${hmUser}:users /home/${hmUser}/.config/zsh/cloister-dev.zsh
-            chown ${hmUser}:users /home/${hmUser}/.config/zsh/cloister-sec.zsh
           '';
         };
       };

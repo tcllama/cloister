@@ -80,9 +80,6 @@ let
         shell.hostConfig = false;
         network.enable = true;
         network.namespace = "dev";
-        # Nested worker launches resolve their wrapper init bind source from the
-        # outer sandbox filesystem, so the runtime fixture must expose the bash
-        # config directory there as well.
         sandbox.binds.ro = [
           {
             src = "/etc/passwd";
@@ -91,10 +88,6 @@ let
           {
             src = "/etc/group";
             dest = "/etc/group";
-          }
-          {
-            src = "${homeDir}/.config/bash";
-            dest = "${homeDir}/.config/bash";
           }
         ];
         workerBroker = {
@@ -173,7 +166,6 @@ pkgs.testers.runNixOSTest (_: {
 
             install -d -m 0700 -o ${hmUser} -g users ${homeDir}
             install -d -m 0700 -o ${hmUser} -g users ${homeDir}/.config
-            install -d -m 0700 -o ${hmUser} -g users ${homeDir}/.config/bash
             install -d -m 0700 -o ${hmUser} -g users ${homeDir}/.local/state
             install -d -m 0700 -o ${hmUser} -g users ${homeDir}/.cache
             install -d -m 0700 -o ${hmUser} -g users ${homeDir}/.local/share
@@ -181,17 +173,7 @@ pkgs.testers.runNixOSTest (_: {
             install -d -m 0700 -o ${hmUser} -g users ${projectDir}
             install -d -m 0700 -o ${hmUser} -g users ${nestedProjectDir}
 
-            cat > ${homeDir}/.config/bash/cloister-dev.bash <<'EOF'
-            ${eval.config.xdg.configFile."bash/cloister-dev.bash".text}
-            EOF
-
-            cat > ${homeDir}/.config/bash/cloister-worker.bash <<'EOF'
-            ${eval.config.xdg.configFile."bash/cloister-worker.bash".text}
-            EOF
-
             printf '%s\n' 'host-original' > ${projectDir}/host.txt
-            chown ${hmUser}:users ${homeDir}/.config/bash/cloister-dev.bash
-            chown ${hmUser}:users ${homeDir}/.config/bash/cloister-worker.bash
             chown ${hmUser}:users ${projectDir}/host.txt
           '';
         };

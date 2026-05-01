@@ -254,6 +254,18 @@ let
     };
   };
 
+  zshBlankNoHostConfigEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.evince = {
+        shell = {
+          name = "zsh";
+          hostConfig = false;
+        };
+      };
+    };
+  };
+
   outsideZsh = eval.config.programs.zsh.initContent;
   outsideBash = multiShellEval.config.programs.bash.initExtra;
   multiArgOutsideZsh = multiArgDefaultEval.config.programs.zsh.initContent;
@@ -266,13 +278,24 @@ let
   multiXdgFiles = multiShellEval.config.xdg.configFile;
   customRcZshInit = customRcZshEval.config.cloister.sandboxes.dev.init.rendered;
   customRcBashInit = customRcBashEval.config.cloister.sandboxes.dev.init.rendered;
-  customRcZshConfig = customRcZshEval.config.xdg.configFile."zsh/cloister-dev.zsh".text;
-  customRcBashConfig = customRcBashEval.config.xdg.configFile."bash/cloister-dev.bash".text;
+  customRcZshInside = customRcZshEval.config.cloister.sandboxes.dev.registry.rendered.inside;
+  customRcBashInside = customRcBashEval.config.cloister.sandboxes.dev.registry.rendered.inside;
+  customRcZshConfig = ''
+    ${customRcZshInit}
+    ${customRcZshInside}
+  '';
+  customRcBashConfig = ''
+    ${customRcBashInit}
+    ${customRcBashInside}
+  '';
   bashNoHostConfig = bashNoHostConfigEval.config.cloister._internal.sandboxConfigs.dev;
   zshNoHostConfig = zshNoHostConfigEval.config.cloister._internal.sandboxConfigs.dev;
+  zshBlankNoHostConfig = zshBlankNoHostConfigEval.config.cloister._internal.sandboxConfigs.evince;
   bashNoHostConfigArgs = builtins.toJSON bashNoHostConfig.static_bwrap_args;
   bashNoHostConfigDynamic = builtins.toJSON bashNoHostConfig.dynamic_binds;
   zshNoHostConfigArgs = builtins.toJSON zshNoHostConfig.static_bwrap_args;
+  zshBlankNoHostConfigArgs = builtins.toJSON zshBlankNoHostConfig.static_bwrap_args;
+  zshBlankNoHostConfigDynamic = builtins.toJSON zshBlankNoHostConfig.dynamic_binds;
   zshBeforeInit = builtins.head (lib.splitString "export FROM_INIT=1" customRcZshInit);
   bashBeforeInit = builtins.head (lib.splitString "export FROM_INIT=1" customRcBashInit);
   zshBeforeRegistry = builtins.head (
@@ -281,6 +304,36 @@ let
   bashBeforeRegistry = builtins.head (
     lib.splitString "alias afterInit='printf after-init\\n'" customRcBashConfig
   );
+
+  hostConfigHooksEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes = {
+        dev = {
+          shell = {
+            name = "zsh";
+            hostConfig = true;
+          };
+          init.text = ''
+            export DEV_ONLY=1
+          '';
+        };
+        evince = {
+          shell = {
+            name = "zsh";
+            hostConfig = true;
+          };
+        };
+      };
+    };
+  };
+  hostConfigHookXdgFiles = hostConfigHooksEval.config.xdg.configFile;
+  hostConfigHookDev = hostConfigHooksEval.config.cloister._internal.sandboxConfigs.dev;
+  hostConfigHookEvince = hostConfigHooksEval.config.cloister._internal.sandboxConfigs.evince;
+  hostConfigHookDevArgs = builtins.toJSON hostConfigHookDev.static_bwrap_args;
+  hostConfigHookDevDynamic = builtins.toJSON hostConfigHookDev.dynamic_binds;
+  hostConfigHookEvinceArgs = builtins.toJSON hostConfigHookEvince.static_bwrap_args;
+  hostConfigHookEvinceDynamic = builtins.toJSON hostConfigHookEvince.dynamic_binds;
 in
 checks.mkCheck "test-cloister-registry" [
   (checks.expectContains "registry emits outside runner helper" "__cloister_run_dev()" outsideZsh)
@@ -315,15 +368,55 @@ checks.mkCheck "test-cloister-registry" [
     multiArgOutsideZsh
   )
   (checks.expectContains "registry renders outside function" "greet()" outsideZsh)
+  (checks.expectContains "outside function requires store-backed init env"
+    "\${CLOISTER_SHELL_INIT:?missing cloister shell init}"
+    outsideZsh
+  )
+  (checks.expectNotContains "outside function does not fall back to legacy init path"
+    "/home/tester/.config/zsh/cloister-dev.zsh"
+    outsideZsh
+  )
+  (checks.expectNotContains "wrapper init does not probe legacy init files" "_cloister_init"
+    outsideZsh
+  )
   (checks.expectNotContains "registry honors noWrap outside" "alias ll='__cloister_run_dev -c ls -l'"
     outsideZsh
   )
   (checks.expectContains "registry keeps noWrap inside" "alias ll='ls -l'" insideRegistry)
   (checks.expectContains "bash wrapper content renders for bash sandboxes" "hello()" outsideBash)
-  (checks.expectTrue "multi-sandbox zsh init file exists" (multiXdgFiles ? "zsh/cloister-one.zsh"))
-  (checks.expectTrue "multi-sandbox bash init file exists" (multiXdgFiles ? "bash/cloister-two.bash"))
-  (checks.expectNotContains "multi-sandbox init files stay distinct" "hello()"
-    multiXdgFiles."zsh/cloister-one.zsh".text
+  (checks.expectFalse "multi-sandbox zsh init file is not globally installed" (
+    multiXdgFiles ? "zsh/cloister-one.zsh"
+  ))
+  (checks.expectFalse "multi-sandbox bash init file is not globally installed" (
+    multiXdgFiles ? "bash/cloister-two.bash"
+  ))
+  (checks.expectFalse "nonblank zsh hook is not globally installed" (
+    hostConfigHookXdgFiles ? "zsh/cloister-dev.zsh"
+  ))
+  (checks.expectContains "nonblank hostConfig zsh hook exports init env" "CLOISTER_SHELL_INIT"
+    hostConfigHookDevArgs
+  )
+  (checks.expectContains "nonblank hostConfig zsh hook uses store init" "cloister-dev.zsh"
+    hostConfigHookDevArgs
+  )
+  (checks.expectNotContains "nonblank hostConfig zsh hook does not mount into host config"
+    "/home/tester/.config/zsh/cloister-dev.zsh"
+    hostConfigHookDevDynamic
+  )
+  (checks.expectNotContains "owning sandbox omits unrelated zsh hook statically" "cloister-evince.zsh"
+    hostConfigHookDevArgs
+  )
+  (checks.expectNotContains "owning sandbox omits unrelated zsh hook dynamically"
+    "cloister-evince.zsh"
+    hostConfigHookDevDynamic
+  )
+  (checks.expectNotContains "blank hostConfig zsh hook is not mounted statically"
+    "cloister-evince.zsh"
+    hostConfigHookEvinceArgs
+  )
+  (checks.expectNotContains "blank hostConfig zsh hook is not mounted dynamically"
+    "cloister-evince.zsh"
+    hostConfigHookEvinceDynamic
   )
   (checks.expectAssertionMessage "registry collision fails with message" collisionEval.assertions
     "cross-sandbox name collision"
@@ -409,5 +502,29 @@ checks.mkCheck "test-cloister-registry" [
   (checks.expectContains "zsh hostConfig false sets ZDOTDIR" ''"ZDOTDIR"'' zshNoHostConfigArgs)
   (checks.expectNotContains "zsh hostConfig false omits host zshrc bind" "$HOME/.zshrc"
     zshNoHostConfigArgs
+  )
+  (checks.expectContains "zsh hostConfig false exports nonblank cloister hook env"
+    "CLOISTER_SHELL_INIT"
+    zshNoHostConfigArgs
+  )
+  (checks.expectContains "zsh hostConfig false keeps nonblank cloister hook in store"
+    "cloister-dev.zsh"
+    zshNoHostConfigArgs
+  )
+  (checks.expectNotContains "blank zsh hostConfig false omits cloister hook statically"
+    "cloister-evince.zsh"
+    zshBlankNoHostConfigArgs
+  )
+  (checks.expectNotContains "blank zsh hostConfig false omits cloister hook dynamically"
+    "cloister-evince.zsh"
+    zshBlankNoHostConfigDynamic
+  )
+  (checks.expectNotContains "blank zsh hostConfig false omits zsh config dir statically"
+    "/home/tester/.config/zsh"
+    zshBlankNoHostConfigArgs
+  )
+  (checks.expectNotContains "blank zsh hostConfig false omits zsh config dir dynamically"
+    "/home/tester/.config/zsh"
+    zshBlankNoHostConfigDynamic
   )
 ]

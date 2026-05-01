@@ -279,6 +279,9 @@ let
 
       computedEnv = {
         PATH = lib.makeBinPath allPackages;
+      }
+      // lib.optionalAttrs hasCloisterInitContent {
+        CLOISTER_SHELL_INIT = "${sandboxShellHookFile}";
       };
 
       # --- Resolution: convert semantic extraBinds → [{src, dest, try}] ---
@@ -502,11 +505,12 @@ let
         bind: !shellConfigHostBindOverlapsManaged bind
       ) shellConfigBinds;
 
-      # --- Minimal shell init for hostConfig = false ---
+      # --- Sandbox-local shell init ---
       cloisterInitContent = ''
         ${sCfg.init.rendered}
         ${sCfg.registry.rendered.inside}
       '';
+      hasCloisterInitContent = builtins.match "[[:space:]]*" cloisterInitContent == null;
 
       # zsh: minimal ZDOTDIR with .zshrc (added via env, nix store always bound)
       cloisterZdotdir = pkgs.writeTextDir ".zshrc" cloisterInitContent;
@@ -514,25 +518,15 @@ let
       # bash: minimal .bash_profile (bound dynamically at $HOME/.bash_profile)
       cloisterBashProfile = pkgs.writeText "cloister-bash-profile-${name}" cloisterInitContent;
 
-      wrapperInitBind = {
-        src = "${configHome}/${shellLib.configDir}/cloister-${name}.${shellLib.initExt}";
-        dest = null;
-        try = false;
-      };
+      sandboxShellHookFile = pkgs.writeText "cloister-${name}.${shellLib.initExt}" cloisterInitContent;
 
-      noHostConfigBinds = lib.optionals (!sCfg.shell.hostConfig) (
-        if sCfg.shell.name == "bash" then
-          [
-            wrapperInitBind
-            {
-              src = "${cloisterBashProfile}";
-              dest = "$HOME/.bash_profile";
-              try = false;
-            }
-          ]
-        else
-          [ wrapperInitBind ]
-      );
+      noHostConfigBinds = lib.optionals (!sCfg.shell.hostConfig && sCfg.shell.name == "bash") [
+        {
+          src = "${cloisterBashProfile}";
+          dest = "$HOME/.bash_profile";
+          try = false;
+        }
+      ];
 
       noHostConfigEnv = lib.optionalAttrs (sCfg.shell.name == "zsh" && !sCfg.shell.hostConfig) {
         ZDOTDIR = "${cloisterZdotdir}";

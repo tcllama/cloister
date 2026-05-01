@@ -1,19 +1,12 @@
 { lib }:
 let
   renderWrapperInit =
-    {
-      configHome,
-      configDir,
-      initExt,
-      outsideRendered,
-    }:
+    { outsideRendered, ... }:
     ''
       if [[ -n "''${CLOISTER:-}" && "''${CLOISTER}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        _cloister_init="${configHome}/${configDir}/cloister-''${CLOISTER}.${initExt}"
-        if [[ -f "$_cloister_init" ]]; then
-          source "$_cloister_init"
+        if [[ -n "''${CLOISTER_SHELL_INIT:-}" ]]; then
+          source "''${CLOISTER_SHELL_INIT}"
         fi
-        unset _cloister_init
       else
         ${outsideRendered}
       fi
@@ -32,12 +25,12 @@ in
     {
       name,
       sandbox,
-      initPath,
       command,
+      ...
     }:
     ''
       ${name}() {
-        __cloister_run_${sandbox} -c ${command} -lc "source \"${initPath}\"; ${name} \"\$@\"" -- "$@"
+        __cloister_run_${sandbox} -c ${command} -lc "source \"\''${CLOISTER_SHELL_INIT:?missing cloister shell init}\"; ${name} \"\$@\"" -- "$@"
       }
     '';
 
@@ -84,15 +77,5 @@ in
 
   inherit renderWrapperInit;
 
-  mkRenderWrapperInit =
-    { configDir, initExt }:
-    { configHome, outsideRendered }:
-    renderWrapperInit {
-      inherit
-        configHome
-        configDir
-        initExt
-        outsideRendered
-        ;
-    };
+  mkRenderWrapperInit = _: { outsideRendered, ... }: renderWrapperInit { inherit outsideRendered; };
 }
