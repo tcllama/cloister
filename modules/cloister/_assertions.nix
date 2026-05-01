@@ -184,10 +184,10 @@ in
         sCfg.dbus.portal.openUri
         sCfg.dbus.portal.screencast
         sCfg.dbus.portal.camera
-        sCfg.dbus.portal.notifications
+        sCfg.dbus.notifications
       ])
       || sCfg.dbus.enable;
-    message = "cloister.sandboxes.${name}: dbus.portal.* requires dbus.enable = true.";
+    message = "cloister.sandboxes.${name}: dbus portal options and dbus.notifications require dbus.enable = true.";
   }
   {
     assertion = invalidPassthroughEnv == [ ];

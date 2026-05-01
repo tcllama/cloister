@@ -1,8 +1,8 @@
 # Evince (GNOME Document Viewer) sandbox example
 #
 # A sandboxed PDF viewer with no network access. Opens documents from the
-# working directory with GPU-accelerated rendering, portal file
-# dialogs, and printing support.
+# working directory with GPU-accelerated rendering and portal file
+# dialogs.
 #
 # Usage:
 #  cl-evince document.pdf           # open a PDF from the current directory
@@ -26,9 +26,6 @@
       fileChooser = true;
       openUri = true;
     };
-
-    # Printing
-    printing.enable = true;
 
     # App launcher
     gui.desktopEntry = {

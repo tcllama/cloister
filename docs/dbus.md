@@ -17,7 +17,7 @@ Each sandbox launch gets its own proxy socket under `%t/cloister/dbus/<name>-<in
 ```nix
 cloister.sandboxes.gui = {
   dbus.enable = true;
-  dbus.portal.notifications = true;
+  dbus.notifications = true;
 };
 ```
 
@@ -30,10 +30,10 @@ Use the built-in desktop integration toggles instead of broad wildcard portal ru
 ```nix
 cloister.sandboxes.chromium.dbus = {
   enable = true;
+  notifications = true;
   portal = {
     fileChooser = true;
     openUri = true;
-    notifications = true;
   };
 };
 ```
@@ -46,7 +46,8 @@ Available toggles:
 - `openUri` - allows the OpenURI portal
 - `screencast` - allows the ScreenCast portal
 - `camera` - allows the Camera portal
-- `notifications` - allows native session-bus notifications through `org.freedesktop.Notifications`
+
+Use `dbus.notifications = true` for native session-bus notifications through `org.freedesktop.Notifications`.
 
 ## Chromium file chooser
 
@@ -83,7 +84,7 @@ Common base policy:
 ```nix
 dbus = {
   enable = true;
-  portal.notifications = true;
+  notifications = true;
 };
 ```
 

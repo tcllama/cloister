@@ -34,8 +34,8 @@
     # D-Bus policies (mirrors Flatpak defaults)
     dbus = {
       enable = true;
+      notifications = true;
       portal = {
-        notifications = true;
         screencast = true;
         camera = true;
         openUri = true;

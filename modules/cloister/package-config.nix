@@ -346,9 +346,6 @@ let
         if sCfg.audio.pipewire.pulseOnly then "${pkgs.pipewire}/bin/pipewire-pulse" else null;
       pipewire_pulse_config_path =
         if sCfg.audio.pipewire.pulseOnly then "${pipewirePulseOnlyConf}" else null;
-      fido2_enable = sCfg.fido2.enable;
-      video_enable = sCfg.video.enable;
-      printing_enable = sCfg.printing.enable;
       dbus_enable = sCfg.dbus.enable;
       seccomp_enable = sCfg.sandbox.seccomp.enable;
       git_enable = sCfg.git.enable;

@@ -2363,21 +2363,6 @@ fn run() -> i32 {
         extra_args.extend(features::gpu_args(config.gpu_shm));
     }
 
-    // FIDO2
-    if config.fido2_enable {
-        extra_args.extend(features::fido2_args());
-    }
-
-    // Video/Camera
-    if config.video_enable {
-        extra_args.extend(features::video_args());
-    }
-
-    // Printing
-    if config.printing_enable {
-        extra_args.extend(features::printing_args());
-    }
-
     // Device binds
     extra_args.extend(features::dev_bind_args(&config.dev_binds));
 

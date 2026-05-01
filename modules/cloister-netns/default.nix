@@ -7,7 +7,7 @@
 let
   cfg = config.cloister-netns;
 
-  effectiveAllowedNamespaces = cfg.allowedNamespaces ++ lib.attrNames cfg.networks;
+  effectiveAllowedNamespaces = lib.attrNames cfg.networks;
 
   isIpv4Address = value: builtins.match "^([0-9]{1,3}\.){3}[0-9]{1,3}$" value != null;
 
@@ -852,23 +852,13 @@ in
   options.cloister-netns = {
     enable = lib.mkEnableOption "capability wrapper for cloister-netns (cloister network namespace helper)";
 
-    allowedNamespaces = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      description = ''
-        List of network namespace names that unprivileged users are allowed to enter via the cloister-netns setcap helper.
-        For security, this list defaults to empty and MUST be explicitly populated if the helper is enabled.
-        The helper will reject any namespace name not exactly matching an entry in this list.
-      '';
-    };
-
     networks = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule networkSubmodule);
       default = { };
       description = ''
         Declarative network namespace definitions. Each attribute name becomes a
         namespace and a systemd service (cloister-netns-<name>). Namespace names
-        are automatically added to allowedNamespaces.
+        are automatically added to the helper allowlist.
 
         Each network must configure exactly one of `wireguard`, `localhost`, `lan`, or `isolated`.
       '';
@@ -916,7 +906,7 @@ in
       default = [ ];
       description = ''
         Namespace names expected by sandboxes.
-        An assertion verifies each is in networks or allowedNamespaces.
+        An assertion verifies each is in networks.
       '';
     };
 
@@ -966,15 +956,13 @@ in
         assertion = builtins.length effectiveAllowedNamespaces > 0;
         message = ''
           cloister-netns is enabled but no namespaces are configured.
-          Either set allowedNamespaces or define networks. For example:
-            cloister-netns.allowedNamespaces = [ "vpn" ];
-          or:
+          Define networks. For example:
             cloister-netns.networks.vpn.wireguard = { ... };
         '';
       }
       {
         assertion = expectedNsNotFound == [ ];
-        message = "cloister-netns: expectedNamespaces contains names not in networks or allowedNamespaces: ${lib.concatStringsSep ", " expectedNsNotFound}";
+        message = "cloister-netns: expectedNamespaces contains names not in networks: ${lib.concatStringsSep ", " expectedNsNotFound}";
       }
       {
         assertion = localhostPool != null;

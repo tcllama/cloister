@@ -19,19 +19,19 @@ Enable namespace selection per sandbox in home-manager:
 cloister.sandboxes.dev.network.namespace = "vpn";
 ```
 
-Install the `cloister-netns` NixOS module on the host system and configure at least one allowed namespace name:
+Install the `cloister-netns` NixOS module on the host system and define at least one namespace declaratively:
 
 ```nix
 {
   imports = [ cloister.nixosModules.cloister-netns ];
   cloister-netns = {
     enable = true;
-    allowedNamespaces = [ "vpn" ];
+    networks.vpn.isolated = true;
   };
 }
 ```
 
-Or define the namespace declaratively under `cloister-netns.networks.<name>`, which automatically adds that name to `allowedNamespaces`.
+Each `cloister-netns.networks.<name>` entry is included in the helper allowlist.
 
 This setup has two pieces:
 
@@ -52,7 +52,7 @@ To use a different authorization group, set `cloister-netns.group = "your-group"
 
 The `cloister-netns` NixOS module can declaratively create and manage network namespaces. Four types are supported: **wireguard** (full VPN tunnel), **localhost** (veth + DNAT to host ports), **lan** (veth + forwarding to allowed CIDR ranges), and **isolated** (loopback only).
 
-Each entry in `cloister-netns.networks` becomes a systemd oneshot service (`cloister-netns-<name>`) and is automatically added to `allowedNamespaces`.
+Each entry in `cloister-netns.networks` becomes a systemd oneshot service (`cloister-netns-<name>`) and is automatically included in the helper allowlist.
 
 | Type | Connectivity | Use case |
 |------|-------------|----------|
@@ -195,12 +195,11 @@ cloister-netns.networks.vpn = {
 |--------|------|---------|---------|
 | `cloister-netns.enable` | bool | `false` | Install the `cloister-netns` capability wrapper |
 | `cloister-netns.group` | str | `"cloister-netns"` | Unix group allowed to execute the helper |
-| `cloister-netns.allowedNamespaces` | listOf str | `[]` | Additional namespace names the helper may enter |
-| `cloister-netns.networks` | attrsOf submodule | `{}` | Declarative namespace definitions (auto-added to allowedNamespaces) |
+| `cloister-netns.networks` | attrsOf submodule | `{}` | Declarative namespace definitions included in the helper allowlist |
 | `cloister-netns.addressPools.localhost` | str | `"172.30.0.0/16"` | CIDR pool used for localhost veth auto-assignment |
 | `cloister-netns.addressPools.lan` | str | `"172.29.0.0/16"` | CIDR pool used for LAN veth auto-assignment |
 | `cloister-netns.firewall.autoOpenLocalhostPorts` | bool | `true` | Auto-open host firewall ports for localhost namespaces on `veth-<name>` |
-| `cloister-netns.expectedNamespaces` | listOf str | `[]` | Extra namespace names to assert exist in `networks` or `allowedNamespaces` |
+| `cloister-netns.expectedNamespaces` | listOf str | `[]` | Extra namespace names to assert exist in `networks` |
 | `cloister-netns.enforceExecAllowlist` | bool | `true` | Restrict post-exec to `allowedExecPaths` only |
 | `cloister-netns.allowedExecPaths` | listOf str | `[cloister-sandbox]` | Executables the helper is allowed to exec |
 

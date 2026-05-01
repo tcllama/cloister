@@ -223,13 +223,13 @@ CLOISTER_DIR=/path/to/project cl-dev
 - **PipeWire / PulseAudio** - audio with optional per-sandbox device filtering via WirePlumber
 - **D-Bus notifications** - per-sandbox filtered proxy with configurable policies
 - **SSH agent** - forward `SSH_AUTH_SOCK` into the sandbox (optional fingerprint filtering + timeout)
-- **Validator helpers** - install Wayland/D-Bus/seccomp validators and wrap them outside the sandbox
+- **Validator helpers** - available separately via the `cloister-diagnostics` package
 
 ## Presets
 
 Sandboxes can opt into opinionated presets with `cloister.sandboxes.<name>.preset`. Presets apply defaults only, so explicit sandbox options still win.
 
-- `hardened` - low-trust CLI sandbox: no network, SSH agent, git config, D-Bus, GUI, or audio; enables validators
+- `hardened` - low-trust CLI sandbox: no network, SSH agent, git config, D-Bus, GUI, or audio
 - `developer` - trusted dev sandbox: host shell config, network, git config, SSH agent, and D-Bus notifications enabled
 - `gui` - general desktop-app sandbox: Wayland, network, D-Bus notifications enabled; host shell config, git config, and SSH agent disabled
 - `chromium` - browser-oriented sandbox: Wayland, network, D-Bus notifications, PipeWire pulse-only mode, PipeWire filters, and Chromium seccomp compatibility enabled
@@ -267,7 +267,7 @@ The options most users reach for first are:
 - `network.enable` or `network.namespace` - disable network or route through a named namespace
 - `gui.wayland.enable`, `dbus.enable`, `audio.pipewire.*` - opt into desktop integration
 - `ssh.enable` and `git.enable` - expose host SSH agent or git config only where needed
-- `validators.enable` - install validator helpers for Wayland, D-Bus, seccomp, and PipeWire
+- `cloister-diagnostics` package - install validator helpers for Wayland, D-Bus, seccomp, and PipeWire when needed
 
 ### NixOS host options
 

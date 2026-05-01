@@ -60,11 +60,8 @@
           bubblewrap-subset-pid = pkgs.callPackage ./pkgs/bubblewrap-subset-pid { };
           inherit (unstablePkgs) cargo-audit;
           cloister-netns = pkgs.callPackage ./helpers/cloister-netns { };
-          cloister-wayland-validate = pkgs.callPackage ./helpers/cloister-wayland-validate { };
-          cloister-dbus-validate = pkgs.callPackage ./helpers/cloister-dbus-validate { };
-          cloister-pipewire-validate = pkgs.callPackage ./helpers/cloister-pipewire-validate { };
+          cloister-diagnostics = pkgs.callPackage ./pkgs/cloister-diagnostics { };
           cloister-seccomp-filter = pkgs.callPackage ./helpers/cloister-seccomp-filter { };
-          cloister-seccomp-validate = pkgs.callPackage ./helpers/cloister-seccomp-validate { };
           cloister-sandbox = pkgs.callPackage ./helpers/cloister-sandbox { };
         }
       );

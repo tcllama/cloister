@@ -4,19 +4,21 @@
 
 When `gui.wayland.securityContext.enable = true`, the sandbox uses the `wp-security-context-v1` protocol to tell the compositor that the client is sandboxed. The compositor then filters which protocol globals are advertised - privileged extensions (screencopy, virtual keyboard injection, etc.) should be hidden.
 
-The `cloister-wayland-validate` helper connects to the Wayland display, enumerates all advertised globals, and checks them against a list of 19 known privileged protocols:
+The `cloister-wayland-validate` helper connects to the Wayland display, enumerates all advertised globals, and checks them against a list of 19 known privileged protocols.
 
-Enable the validator helpers for a sandbox to install all four validation tools and wrap them outside the sandbox:
+Validator helpers are provided by the separate `cloister-diagnostics` package and are not installed in sandboxes by default. Add that package explicitly where you want to run the tools. For example, install it on the host:
 
 ```nix
-cloister.sandboxes.dev.validators.enable = true;
+environment.systemPackages = [ cloister.packages.${pkgs.system}.cloister-diagnostics ];
+```
+
+or add it to a sandbox that needs in-sandbox checks:
+
+```nix
+cloister.sandboxes.dev.extraPackages = [ cloister.packages.${pkgs.system}.cloister-diagnostics ];
 ```
 
 ```sh
-# Run inside a sandbox with Wayland enabled
-cl-dev cloister-wayland-validate
-
-# Run outside the sandbox on the host
 cloister-wayland-validate
 ```
 
@@ -48,17 +50,13 @@ Running outside a sandbox (on the raw compositor socket) shows which privileged 
 The `cloister-dbus-validate` helper connects to the sandbox D-Bus proxy, lists visible names, and verifies that denylisted high-risk services are not exposed.
 
 ```sh
-# Run inside a sandbox with D-Bus enabled
-cl-dev cloister-dbus-validate
-
-# Run outside the sandbox on the host
 cloister-dbus-validate
 ```
 
 By default it validates against the built-in denylist and prints discovered names. Use `--quiet` to suppress the name list, `--show-all` to force it on, `--activatable` to include activatable bus names, and `--deny` to override the denylist:
 
 ```sh
-cl-dev cloister-dbus-validate \
+cloister-dbus-validate \
   --deny org.freedesktop.secrets,org.freedesktop.login1 \
   --activatable \
   --show-all

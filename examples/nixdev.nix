@@ -47,7 +47,7 @@
     # Notifications
     dbus = {
       enable = true;
-      portal.notifications = true;
+      notifications = true;
     };
 
     sandbox = {

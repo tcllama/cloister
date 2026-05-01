@@ -128,12 +128,12 @@ let
         gui.wayland.enable = true;
         dbus = {
           enable = true;
+          notifications = true;
           portal = {
             fileChooser = true;
             openUri = true;
             screencast = true;
             camera = true;
-            notifications = true;
           };
         };
       };
@@ -481,7 +481,7 @@ let
       betaConfig.pipewire_socket_name
     )
     (checks.expectAssertionMessage "portal requires dbus" portalWithoutDbus.assertions
-      "dbus.portal.* requires dbus.enable = true"
+      "dbus portal options and dbus.notifications require dbus.enable = true"
     )
     (checks.expectAssertionMessage "desktop entry requires default command"
       desktopWithoutCommand.assertions

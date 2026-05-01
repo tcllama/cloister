@@ -105,8 +105,8 @@ checks.mkCheck "test-cloister-examples" [
   (checks.expectEq "worker broker example enables dbus for dev" true
     workerBroker.config.cloister.sandboxes.dev.dbus.enable
   )
-  (checks.expectEq "worker broker example enables notification portal for dev" true
-    workerBroker.config.cloister.sandboxes.dev.dbus.portal.notifications
+  (checks.expectEq "worker broker example enables notifications for dev" true
+    workerBroker.config.cloister.sandboxes.dev.dbus.notifications
   )
   (checks.expectEq "worker broker example maps overlay profile to overlay worker" "worker-overlay"
     workerBroker.config.cloister.sandboxes.dev.workerBroker.spawnableProfiles.overlay.sandbox
@@ -165,13 +165,7 @@ checks.mkCheck "test-cloister-examples" [
   (checks.expectEq "worker broker example hardens overlay worker" "hardened"
     workerBroker.config.cloister.sandboxes.worker-overlay.preset
   )
-  (checks.expectEq "worker broker example disables validators for overlay worker" false
-    workerBroker.config.cloister.sandboxes.worker-overlay.validators.enable
-  )
   (checks.expectEq "worker broker example hardens rw worker" "hardened"
     workerBroker.config.cloister.sandboxes.worker-rw.preset
-  )
-  (checks.expectEq "worker broker example disables validators for rw worker" false
-    workerBroker.config.cloister.sandboxes.worker-rw.validators.enable
   )
 ]

@@ -54,12 +54,6 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub pipewire_pulse_config_path: Option<String>,
     #[serde(default)]
-    pub fido2_enable: bool,
-    #[serde(default)]
-    pub video_enable: bool,
-    #[serde(default)]
-    pub printing_enable: bool,
-    #[serde(default)]
     pub dbus_enable: bool,
     #[serde(default)]
     pub seccomp_enable: bool,

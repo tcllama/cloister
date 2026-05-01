@@ -138,27 +138,6 @@ let
         else
           { };
 
-      validatorPackages =
-        let
-          cloister-wayland-validate = pkgs.callPackage ../../helpers/cloister-wayland-validate { };
-          cloister-dbus-validate = pkgs.callPackage ../../helpers/cloister-dbus-validate { };
-          cloister-seccomp-validate = pkgs.callPackage ../../helpers/cloister-seccomp-validate { };
-          cloister-pipewire-validate = pkgs.callPackage ../../helpers/cloister-pipewire-validate { };
-        in
-        [
-          cloister-wayland-validate
-          cloister-dbus-validate
-          cloister-seccomp-validate
-          cloister-pipewire-validate
-        ];
-
-      validatorCommands = [
-        "cloister-wayland-validate"
-        "cloister-dbus-validate"
-        "cloister-seccomp-validate"
-        "cloister-pipewire-validate"
-      ];
-
       sandboxHome =
         if config.sandbox.anonymize.enable then
           "/home/${config.sandbox.anonymize.username}"
@@ -168,7 +147,7 @@ let
       pipewireDbusEnabled = config.dbus.enable && config.audio.pipewire.dbus.enable;
       pipewireNativeEnabled = config.audio.pipewire.enable && !config.audio.pipewire.pulseOnly;
       fileChooserPortalEnabled = config.dbus.portal.fileChooser;
-      notificationBusEnabled = config.dbus.portal.notifications;
+      notificationBusEnabled = config.dbus.notifications;
       openUriPortalEnabled = config.dbus.portal.openUri;
 
       xdg-open-portal = pkgs.writeShellScriptBin "xdg-open" ''
@@ -455,12 +434,6 @@ let
             For app-specific sandboxes, set this to the application command,
             e.g. `[ "evince" ]` so that `cl-evince` launches evince directly.
           '';
-        };
-
-        validators.enable = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = "Install cloister validator helpers inside the sandbox and wrap them outside.";
         };
 
         workerBroker = {
@@ -1096,6 +1069,15 @@ let
             description = "Enable xdg-dbus-proxy logging. Prints all filtering decisions to stderr from the per-launch proxy wrapper.";
           };
 
+          notifications = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Allow desktop notifications on the session bus by exposing
+              org.freedesktop.Notifications. Requires dbus.enable = true.
+            '';
+          };
+
           portal = lib.mkOption {
             type = lib.types.submodule {
               options = {
@@ -1142,21 +1124,10 @@ let
                     Camera portal. Requires dbus.enable = true.
                   '';
                 };
-
-                notifications = lib.mkOption {
-                  type = lib.types.bool;
-                  default = false;
-                  description = ''
-                    Allow desktop notifications on the session bus by exposing
-                    org.freedesktop.Notifications. This is not a portal API,
-                    but is grouped here as a common desktop integration toggle.
-                    Requires dbus.enable = true.
-                  '';
-                };
               };
             };
             default = { };
-            description = "Desktop integration toggles for portals and notifications.";
+            description = "Desktop integration toggles for portals.";
           };
 
           rawPolicies = lib.mkOption {
@@ -1278,30 +1249,6 @@ let
           };
         };
 
-        fido2 = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Bind /dev/hidraw* devices and related sysfs paths for FIDO2/U2F security key access (e.g. YubiKey WebAuthn).";
-          };
-        };
-
-        video = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Bind /dev/video* devices and related sysfs paths for webcam/camera access (e.g. video calls in sandboxed browsers).";
-          };
-        };
-
-        printing = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Forward the CUPS printing socket into the sandbox for printer access.";
-          };
-        };
-
         registry = {
           aliases = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
@@ -1385,8 +1332,6 @@ let
       # --- Submodule config: defaults + computed registry ---
       config = lib.mkMerge [
         (lib.mkIf (config.preset == "hardened") {
-          validators.enable = lib.mkDefault true;
-
           gui.wayland.enable = lib.mkDefault false;
 
           ssh.enable = lib.mkDefault false;
@@ -1410,7 +1355,7 @@ let
           git.enable = lib.mkDefault true;
           ssh.enable = lib.mkDefault true;
           dbus.enable = lib.mkDefault true;
-          dbus.portal.notifications = lib.mkDefault true;
+          dbus.notifications = lib.mkDefault true;
 
           audio = {
             pipewire = {
@@ -1425,7 +1370,7 @@ let
           git.enable = lib.mkDefault false;
           ssh.enable = lib.mkDefault false;
           dbus.enable = lib.mkDefault true;
-          dbus.portal.notifications = lib.mkDefault true;
+          dbus.notifications = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault true;
 
@@ -1442,7 +1387,7 @@ let
           git.enable = lib.mkDefault false;
           ssh.enable = lib.mkDefault false;
           dbus.enable = lib.mkDefault true;
-          dbus.portal.notifications = lib.mkDefault true;
+          dbus.notifications = lib.mkDefault true;
 
           gui.wayland.enable = lib.mkDefault true;
 
@@ -1460,7 +1405,6 @@ let
           _basePackages = basePackages;
 
           extraPackages = lib.mkMerge [
-            (lib.mkIf config.validators.enable (lib.mkDefault validatorPackages))
             (lib.mkIf pipewireNativeEnabled [ pkgs.pipewire ])
             (lib.mkIf config.audio.pipewire.pulseOnly [ pkgs.pipewire ])
             (lib.mkIf openUriPortalEnabled [
@@ -1468,8 +1412,6 @@ let
               xdg-open-portal
             ])
           ];
-
-          registry.commands = lib.mkIf config.validators.enable (lib.mkAfter validatorCommands);
 
           sandbox = {
             dirs = lib.mkDefault [

@@ -20,7 +20,6 @@ let
         dev = {
           preset = "hardened";
           defaultCommand = [ "sh" ];
-          validators.enable = false;
           ssh.enable = true;
           sandbox.passthroughEnv = lib.mkAfter [ "TMUX" ];
           registry = {
@@ -116,12 +115,6 @@ pkgs.testers.runNixOSTest (_: {
     assert_eq(machine, tester_shell + "'greet'", "dev", "greet prints sandbox name")
     assert_eq(machine, tester_shell + "'printenv CLOISTER'", "dev", "CLOISTER env is set")
 
-    machine.succeed(
-        "${pkgs.util-linux}/bin/runuser -u ${hmUser} -- env HOME=/home/${hmUser} "
-        + "XDG_CONFIG_HOME=/home/${hmUser}/.config CLOISTER_DIR=/tmp "
-        + "/run/current-system/sw/bin/cl-sec -c cloister-seccomp-validate --json "
-        + "| ${pkgs.jq}/bin/jq -e '.pass == true' >/dev/null"
-    )
     machine.succeed(
         "${pkgs.util-linux}/bin/runuser -u ${hmUser} -- env HOME=/home/${hmUser} "
         + "XDG_CONFIG_HOME=/home/${hmUser}/.config CLOISTER_DIR=/tmp "

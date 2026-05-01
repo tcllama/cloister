@@ -71,9 +71,6 @@ let
           allowFingerprints = [ "SHA256:test-fingerprint" ];
           filterTimeoutSeconds = 7;
         };
-        fido2.enable = true;
-        video.enable = true;
-        printing.enable = true;
         git.enable = true;
         sandbox.devBinds = [
           "/dev/input/js0"
@@ -168,13 +165,6 @@ let
     };
   };
 
-  validatorsEval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.dev.validators.enable = true;
-    };
-  };
-
   packagesEval = hm {
     cloister = {
       enable = true;
@@ -266,8 +256,6 @@ let
   imageStoreConfig = imageStoreEval.config.cloister._internal.sandboxConfigs.dev;
   imageStoreInternal = imageStoreEval.config.cloister._internal.sandboxInternals.dev;
   defaultBashConfig = defaultBashEval.config.cloister._internal.sandboxConfigs.dev;
-  validatorsConfig = validatorsEval.config.cloister._internal.sandboxConfigs.dev;
-  validatorsRegistry = validatorsEval.config.cloister.sandboxes.dev.registry.rendered.outside.zsh;
   packagesConfig = packagesEval.config.cloister._internal.sandboxConfigs.dev;
   packagesStaticArgs = builtins.toJSON packagesConfig.static_bwrap_args;
   workerBrokerConfig = workerBrokerEval.config.cloister._internal.sandboxConfigs.dev;
@@ -382,9 +370,6 @@ checks.mkCheck "test-cloister-rendered-config" [
     "SHA256:test-fingerprint"
   ] featuresConfig.ssh_allow_fingerprints)
   (checks.expectEq "ssh timeout renders" 7 featuresConfig.ssh_filter_timeout_seconds)
-  (checks.expectEq "fido2 integration toggle renders" true featuresConfig.fido2_enable)
-  (checks.expectEq "video integration toggle renders" true featuresConfig.video_enable)
-  (checks.expectEq "printing integration toggle renders" true featuresConfig.printing_enable)
   (checks.expectEq "git integration toggle renders" true featuresConfig.git_enable)
   (checks.expectEq "device binds render" [
     "/dev/input/js0"
@@ -392,13 +377,6 @@ checks.mkCheck "test-cloister-rendered-config" [
   ] featuresConfig.dev_binds)
   (checks.expectContains "extraPackages include hello in PATH" "hello" packagesStaticArgs)
   (checks.expectContains "extraPackages are included in PATH" "jq" packagesStaticArgs)
-  (checks.expectContains "validators expose wrapped command outside sandbox"
-    "alias cloister-wayland-validate='__cloister_run_dev -c cloister-wayland-validate'"
-    validatorsRegistry
-  )
-  (checks.expectContains "validators add helper binaries to sandbox PATH" "cloister-dbus-validate" (
-    builtins.toJSON validatorsConfig.static_bwrap_args
-  ))
   (checks.expectEq "worker broker enable renders" true workerBrokerConfig.worker_broker.enable)
   (checks.expectEq "disabled worker broker does not render generated launchers" { }
     workerBrokerDisabledConfig.worker_broker.generated_launchers

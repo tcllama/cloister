@@ -95,10 +95,10 @@ If you want a complete example, see `examples/image-store.nix`.
 
 ### Validator helpers
 
-Install the Wayland, D-Bus, seccomp, and PipeWire validators inside the sandbox and wrap them outside:
+Wayland, D-Bus, seccomp, and PipeWire validators are available in the separate `cloister-diagnostics` package. They are not installed in sandboxes by default.
 
 ```nix
-cloister.sandboxes.dev.validators.enable = true;
+environment.systemPackages = [ cloister.packages.${pkgs.system}.cloister-diagnostics ];
 ```
 
 ### Shell
@@ -403,14 +403,14 @@ To route all sandbox network traffic through a specific Linux network namespace 
 cloister.sandboxes.dev.network.namespace = "vpn";
 ```
 
-This requires the `cloister-netns` NixOS module on the host system plus at least one allowed namespace name:
+This requires the `cloister-netns` NixOS module on the host system plus a declarative namespace definition:
 
 ```nix
 {
   imports = [ cloister.nixosModules.cloister-netns ];
   cloister-netns = {
     enable = true;
-    allowedNamespaces = [ "vpn" ];
+    networks.vpn.isolated = true;
   };
 }
 ```
@@ -586,13 +586,7 @@ Generates an XDG `.desktop` file so the sandbox appears in your app launcher. Re
 
 ### Device integrations
 
-Use named integration toggles for common device access:
-
-- `video.enable` for `/dev/video*` webcam/camera access
-- `fido2.enable` for FIDO2/U2F security keys
-- `printing.enable` for CUPS printing
-
-For uncommon devices, including `/dev/kvm`, pass explicit device nodes with `sandbox.devBinds`:
+Pass explicit device nodes with `sandbox.devBinds` when a sandbox needs direct device access:
 
 ```nix
 cloister.sandboxes.dev.sandbox.devBinds = [ "/dev/input/js0" ];
@@ -624,7 +618,7 @@ cloister.sandboxes.dev.audio.pipewire = {
     # filters.enable defaults to true when PipeWire audio is enabled.
     audioOut = true;  # speakers (default)
     # audioIn = true; # microphones
-    # videoIn = true; # webcams (also needs video.enable)
+    # videoIn = true; # cameras exposed through filtered PipeWire
   };
 };
 ```
@@ -647,28 +641,12 @@ cloister.sandboxes.dev.audio.pipewire = {
 
 This keeps the backend on filtered PipeWire, but exposes only a PulseAudio-compatible proxy socket inside the sandbox. `audioOut`, `audioIn`, and `control` still apply. Native PipeWire tools and camera/screencast flows are intentionally unavailable in this mode.
 
-### Webcam/Camera
-
-```nix
-cloister.sandboxes.dev.video.enable = true;
-```
-
-Binds `/dev/video*` devices and related sysfs paths for webcam/camera access. At runtime, the sandbox binary scans `/sys/class/video4linux/` to discover all V4L2 video devices and their USB/PCI parent device paths, binding each one into the sandbox. Useful for video calls in sandboxed browsers or video capture applications.
-
-### Printing
-
-```nix
-cloister.sandboxes.dev.printing.enable = true;
-```
-
-Forwards the CUPS printing socket (`/run/cups/cups.sock`) into the sandbox. Sets `CUPS_SERVER` to the socket path so applications can discover the printer. The socket is bound read-only.
-
 ### D-Bus notifications
 
 ```nix
 cloister.sandboxes.dev.dbus = {
   enable = true;
-  portal.notifications = true;
+  notifications = true;
 };
 ```
 
@@ -786,7 +764,6 @@ See the sections above for usage examples and explanations.
 | `shell.customRcPath.bashenv` | nullOr path | `null` | Custom bashenv file to source inside the sandbox |
 | `shell.customRcPath.bashrc` | nullOr path | `null` | Custom bashrc file to source inside the sandbox |
 | `shell.customRcPath.profile` | nullOr path | `null` | Custom profile file to source inside the sandbox |
-| `validators.enable` | bool | `false` | Install cloister validator helpers and wrap them outside |
 | `workerBroker.enable` | bool | `false` | Enable worker broker support for spawnable sandbox profiles |
 | `workerBroker.spawnableProfiles` | attrsOf submodule | `{}` | Spawnable worker broker profiles keyed by profile name |
 | `workerBroker.availableDelegatedPerDirMounts` | attrsOf submodule | `{}` | Available delegated per-directory mounts keyed by sandbox-relative path |
@@ -854,7 +831,7 @@ See the sections above for usage examples and explanations.
 | `dbus.portal.openUri` | bool | `false` | Allow the OpenURI portal |
 | `dbus.portal.screencast` | bool | `false` | Allow the ScreenCast portal |
 | `dbus.portal.camera` | bool | `false` | Allow the Camera portal |
-| `dbus.portal.notifications` | bool | `false` | Allow native desktop notifications via `org.freedesktop.Notifications` |
+| `dbus.notifications` | bool | `false` | Allow native desktop notifications via `org.freedesktop.Notifications` |
 | `dbus.rawPolicies.talk` | list of str | `[]` | Raw D-Bus TALK allowlist |
 | `dbus.rawPolicies.own` | list of str | `[]` | Raw D-Bus OWN allowlist |
 | `dbus.rawPolicies.see` | list of str | `[]` | Raw D-Bus SEE allowlist |
@@ -862,16 +839,13 @@ See the sections above for usage examples and explanations.
 | `dbus.rawPolicies.broadcast` | attrsOf (list of str) | `{}` | Raw per-name broadcast rules |
 | `audio.pipewire.enable` | bool | `false` | Enable filtered PipeWire-backed audio |
 | `audio.pipewire.pulseOnly` | bool | `false` | Expose only a filtered PulseAudio-compatible proxy socket while keeping PipeWire hidden from the sandbox |
-| `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (*auto-enabled by `audio.pipewire.enable`) |
+| `audio.pipewire.filters.enable` | bool | `false`* | Enable PipeWire filtering (\*auto-enabled by `audio.pipewire.enable`) |
 | `audio.pipewire.filters.audioOut` | bool | `true` | Allow playback to speakers/sinks when filtering is enabled |
 | `audio.pipewire.filters.audioIn` | bool | `false` | Allow microphone access when filtering is enabled |
 | `audio.pipewire.filters.videoIn` | bool | `false` | Allow camera nodes when filtering is enabled |
 | `audio.pipewire.filters.control` | bool | `false` | Allow volume and mute changes on visible nodes |
 | `audio.pipewire.filters.routing` | bool | `false` | Allow default-device and stream-routing changes |
 | `audio.pipewire.dbus.enable` | bool | `true` | Let sandboxed PipeWire clients use D-Bus support when a filtered bus is available |
-| `video.enable` | bool | `false` | Bind /dev/video* devices for webcam/camera access |
-| `printing.enable` | bool | `false` | Forward CUPS printing socket |
-| `fido2.enable` | bool | `false` | Bind /dev/hidraw\* devices for FIDO2/U2F security key access |
 | `sandbox.devBinds` | list of str | `[]` | Additional device paths for `--dev-bind` passthrough |
 | `registry.aliases` | attrsOf str | `{}` | Shell aliases |
 | `registry.functions` | attrsOf lines | `{}` | Shell functions |

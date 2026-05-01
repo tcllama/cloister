@@ -24,7 +24,6 @@ cloister.sandboxes.zoom = {
       routing = false;  # default device / stream routing
     };
   };
-  video.enable = true;
 };
 ```
 
@@ -36,7 +35,7 @@ These control which `media.class` types are visible in the PipeWire registry.
 |--------|------------|---------|-------|
 | `audioOut` | `Audio/Sink` | `true` | Playback |
 | `audioIn` | `Audio/Source` | `false` | Microphones |
-| `videoIn` | `Video/Source` | `false` | Cameras. Also needs `video.enable = true` for `/dev/video*` binding |
+| `videoIn` | `Video/Source` | `false` | Cameras exposed through the filtered PipeWire graph |
 
 ### Management toggles
 

@@ -78,7 +78,6 @@ let
         preset = "hardened";
         shell.name = "bash";
         shell.hostConfig = false;
-        validators.enable = false;
         network.enable = true;
         network.namespace = "dev";
         # Nested worker launches resolve their wrapper init bind source from the
@@ -120,7 +119,6 @@ let
         preset = "hardened";
         shell.name = "bash";
         shell.hostConfig = false;
-        validators.enable = false;
         network.enable = true;
         network.namespace = "dev";
       };

@@ -1,6 +1,6 @@
 # Chromium sandbox example
 #
-# A sandboxed Chromium browser with GPU acceleration, audio, FIDO2/WebAuthn,
+# A sandboxed Chromium browser with GPU acceleration, audio,
 # xdg-desktop-portal integration, and a generated .desktop entry for your
 # app launcher.
 #
@@ -31,16 +31,13 @@
       # audioOut is true by default; audioIn/videoIn/control/routing are false
     };
 
-    # FIDO2 / WebAuthn
-    fido2.enable = true;
-
     # D-Bus / portals - matches Flatpak's Chromium policy
     dbus = {
       enable = true;
+      notifications = true;
       portal = {
         fileChooser = true;
         openUri = true;
-        notifications = true;
       };
     };
 

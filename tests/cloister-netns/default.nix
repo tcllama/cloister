@@ -47,7 +47,7 @@ let
   missingNamespace = nixos.netns {
     cloister-netns = {
       enable = true;
-      allowedNamespaces = [ "vpn" ];
+      networks.vpn.isolated = true;
       expectedNamespaces = [ "missing" ];
     };
   };
@@ -60,14 +60,14 @@ let
     cloister-netns = {
       enable = true;
       group = "sandboxers";
-      allowedNamespaces = [ "vpn" ];
+      networks.vpn.isolated = true;
     };
   };
 
   invalidLocalhostPool = nixos.netns {
     cloister-netns = {
       enable = true;
-      allowedNamespaces = [ "vpn" ];
+      networks.vpn.isolated = true;
       addressPools.localhost = "bad";
     };
   };
@@ -147,7 +147,7 @@ let
   invalidLanPool = nixos.netns {
     cloister-netns = {
       enable = true;
-      allowedNamespaces = [ "vpn" ];
+      networks.vpn.isolated = true;
       addressPools.lan = "bad";
     };
   };
@@ -155,7 +155,7 @@ let
   invalidLocalhostPoolPrefix = nixos.netns {
     cloister-netns = {
       enable = true;
-      allowedNamespaces = [ "vpn" ];
+      networks.vpn.isolated = true;
       addressPools.localhost = "172.30.0.0/31";
     };
   };
@@ -514,7 +514,7 @@ checks.mkCheck "test-cloister-netns" [
     helperDrvAttrs.CLOISTER_NETNS_ALLOWED_EXEC_PATHS
   )
   (checks.expectAssertionMessage "expected namespace mismatch fails" missingNamespace.assertions
-    "expectedNamespaces contains names not in networks or allowedNamespaces"
+    "expectedNamespaces contains names not in networks"
   )
   (checks.expectAssertionMessage "enable requires namespaces" noNamespaces.assertions
     "cloister-netns is enabled but no namespaces are configured"

@@ -19,7 +19,7 @@ lib.recursiveUpdate base {
 
       dbus = {
         enable = true;
-        portal.notifications = true;
+        notifications = true;
       };
 
       workerBroker = {
@@ -42,7 +42,6 @@ lib.recursiveUpdate base {
       extraPackages = sharedNodeTools;
 
       shell.hostConfig = false;
-      validators.enable = false;
     };
 
     worker-rw = {
@@ -50,7 +49,6 @@ lib.recursiveUpdate base {
       extraPackages = sharedNodeTools;
 
       shell.hostConfig = false;
-      validators.enable = false;
       ssh.enable = true;
       git.enable = true;
     };
