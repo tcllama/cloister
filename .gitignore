@@ -8,4 +8,8 @@ target/
 # direnv
 .direnv/
 .worktrees/
-docs/superpowers
+
+# AI Tools
+.couchai
+.opencode
+.pi
