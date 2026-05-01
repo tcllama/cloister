@@ -39,7 +39,7 @@ Crash-leftover session records are not yet pruned automatically.
 ```nix
 cloister.sandboxes = {
   dev = {
-    preset = "dev";
+    preset = "developer";
     sandbox.bindWorkingDirectory = true;
 
     workerBroker.profiles = {

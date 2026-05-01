@@ -256,30 +256,63 @@ You can change the authorization group with `cloister-netns.group`. See `docs/ne
 
 ## Key options
 
-All per-sandbox options live under `cloister.sandboxes.<name>.*`. For the full reference, defaults, and detailed behavior, use [Configuration & Options Reference](docs/configuration.md).
+This is a quick map of the user-facing options most people edit first. For the full reference, defaults, and detailed behavior, use [Configuration & Options Reference](docs/configuration.md).
 
-The options most users reach for first are:
+### Home Manager options
 
-- `preset` - start from `hardened`, `developer`, `gui`, or `chromium`
-- `defaultCommand` - make `cl-<name>` launch an app instead of an interactive shell
-- `extraPackages` - add tools to the sandbox PATH
-- `sandbox.extraBinds.*` - persist config, caches, and per-project state explicitly
-- `network.enable` or `network.namespace` - disable network or route through a named namespace
-- `gui.enable`, `dbus.enable`, `audio.pipewire.*` - opt into desktop integration
-- `ssh.enable` and `git.enable` - expose host SSH agent or git config only where needed
-- `cloister-diagnostics` package - install validator helpers for Wayland, D-Bus, seccomp, and PipeWire when needed
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `cloister.enable` | `false` | Enable the Home Manager integration. |
+| `cloister.defaultShell` | `"zsh"` | Choose the default sandbox shell (`"zsh"` or `"bash"`). |
+| `cloister.sandboxes.<name>` | `{ }` | Define a sandbox; each name generates a `cl-<name>` wrapper. |
+| `cloister-diagnostics` package | not installed | Install validator helpers for Wayland, D-Bus, seccomp, and PipeWire. |
+
+### Per-sandbox options
+
+All options in this table are set under `cloister.sandboxes.<name>`, for example `cloister.sandboxes.dev.preset = "developer";`.
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `audio.pipewire.*` | disabled | Enable filtered PipeWire or PulseAudio-compatible audio access. |
+| `dbus.*` | disabled | Enable filtered D-Bus, notifications, portals, logging, and raw policies. |
+| `defaultCommand` | `null` | Make `cl-<name>` launch an app or command instead of an interactive shell. |
+| `extraPackages` | `[ ]` | Add packages to the sandbox `PATH`. |
+| `git.enable` | `false` | Expose host git config where needed. |
+| `gui.*` | disabled | Enable Wayland, fonts, themes, extra GUI packages, and desktop entries. |
+| `init.text` | `""` | Source custom shell code inside the sandbox at startup. |
+| `network.enable` | `true` | Share host networking; set to `false` for no network access. |
+| `network.namespace` | `null` | Enter a named network namespace instead of the host network. |
+| `preset` | `null` | Start from `hardened`, `developer`, `gui`, or `chromium` defaults. |
+| `registry.*` | empty | Create aliases, functions, command wrappers, and interactive wrappers. |
+| `sandbox.anonymize.*` | disabled | Present a generic username, home directory, hostname, and process view. |
+| `sandbox.bindWorkingDirectory` | `true` | Expose the detected git root or current directory read-write. |
+| `sandbox.copyFiles` | `[ ]` | Copy host files into writable sandbox state without mutating the host originals. |
+| `sandbox.env` | `{ }` | Set fixed environment variables inside the sandbox. |
+| `sandbox.extraBinds.*` | empty | Persist config, caches, managed files, and per-directory state explicitly. |
+| `sandbox.nixStore.mode` | `"host"` | Use the host `/nix/store` or an immutable `"image-store"` mount. |
+| `sandbox.passthroughEnv` | locale vars | Pass selected host environment variables through when set. |
+| `sandbox.seccomp.*` | enabled | Tune syscall filtering, including Chromium/Electron compatibility. |
+| `shell.customRcPath.*` | `null` | Use sandbox-specific startup files such as `zshrc`, `bashrc`, or `profile`. |
+| `shell.hostConfig` | `false` | Bind host shell startup files into the sandbox. |
+| `shell.name` | `cloister.defaultShell` | Select the sandbox shell (`"zsh"` or `"bash"`). |
+| `ssh.allowFingerprints` | `[ ]` | Restrict SSH agent keys by allowed fingerprints. |
+| `ssh.enable` | `false` | Expose host SSH agent access where needed. |
+| `workerBroker.profiles` | `{ }` | Generate worker-broker launchers for delegated project workspaces; each profile requires `sandbox` and `workspace.mode`. |
 
 ### NixOS host options
 
-These are the host-level NixOS settings exposed by Cloister itself:
+These host-level options are exposed by Cloister's optional NixOS modules.
 
-| Option | Type | Default | Purpose |
-|--------|------|---------|---------|
-| `cloister.imageStore.base` | str | `"/var/lib/cloister/images"` | Publish immutable store images and metadata by store hash |
-| `cloister.imageStore.mountBase` | str | `"/run/cloister/images"` | Mount immutable store images by store hash |
-| `cloister.imageStore.compression.enable` | bool | `true` | Compress generated squashfs images with zstd level 10 and 1 MiB blocks |
-| `cloister.imageStore.enable` | bool | `false` | Enable periodic cleanup of published image-store links |
-| `cloister.imageStore.interval` | str | `"weekly"` | systemd timer schedule for image-store cleanup |
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `cloister.imageStore.base` | `"/var/lib/cloister/images"` | Publish immutable store images and metadata by store hash. |
+| `cloister.imageStore.mountBase` | `"/run/cloister/images"` | Mount immutable store images by store hash. |
+| `cloister.imageStore.compression.enable` | `true` | Compress generated squashfs images with zstd level 10 and 1 MiB blocks. |
+| `cloister.imageStore.enable` | `false` | Enable periodic cleanup of published image-store links. |
+| `cloister.imageStore.interval` | `"weekly"` | Set the systemd timer schedule for image-store cleanup. |
+| `cloister-netns.networks.<name>` | `{ }` | Define localhost, LAN, isolated, or WireGuard-routed network namespaces. |
+| `cloister-netns.veth.addressPool` | `"172.29.0.0/16"` | Allocate veth address pairs for localhost and LAN namespaces. |
+| `cloister-netns.group` | `"cloister-netns"` | Choose the Unix group allowed to run the network namespace helper. |
 
 ## Documentation
 

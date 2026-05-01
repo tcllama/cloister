@@ -9,8 +9,8 @@ Presets provide opinionated bundles of sandbox defaults under `cloister.sandboxe
 Low-trust CLI sandbox for untrusted tools, AI agents, and unknown scripts.
 
 - disables network, SSH agent forwarding, git config binds, D-Bus, GUI, and audio
-- disables host shell config
-- enables validator helpers by default
+- keeps host shell config disabled
+- keeps the base sandbox protections such as seccomp enabled
 
 ```nix
 cloister.sandboxes.untrusted = {

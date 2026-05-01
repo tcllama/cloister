@@ -185,11 +185,11 @@ cloister.sandboxes.dev.init.text = ''
 
 ## Paths and Environment Variables
 
-Cloister strictly disallows bash environment variable expansions (like `$HOME`, `$XDG_RUNTIME_DIR`, or `$USER`) in configuration options related to paths (such as `sandbox.extraBinds.perDir`, `copyFiles`, `binds`, etc.). This is a security measure to prevent shell injection and path evaluation vulnerabilities during wrapper script execution.
+Cloister strictly disallows bash environment variable expansions (like `$HOME`, `$XDG_RUNTIME_DIR`, or `$USER`) in host-side path options such as `sandbox.extraBinds.perDir`, `sandbox.binds.*.src`, `sandbox.copyFiles.*.src`, symlink paths, device binds, and similar values. This is a security measure to prevent shell injection and path evaluation vulnerabilities during wrapper script execution.
 
-Instead of bash variables, you should use **Nix-native path evaluations**. Since this module is configured within `home-manager`, you have full access to your home directory, runtime directories, and config paths through `config`.
+Instead of bash variables in host paths, use **Nix-native path evaluations**. Since this module is configured within `home-manager`, you have full access to your home directory, runtime directories, and config paths through `config`.
 
-**❌ Incorrect (Shell variables, will fail validation):**
+**❌ Incorrect (shell variables in host paths, will fail validation):**
 
 ```nix
 cloister.sandboxes.dev.sandbox = {
@@ -204,7 +204,9 @@ cloister.sandboxes.dev.sandbox = {
 };
 ```
 
-**✅ Correct (Nix-native pathing):**
+This fails because `extraBinds.perDir` keys and `copyFiles.*.src` are host-side paths. The `copyFiles.*.dest` value shown here is sandbox-side and is valid; see the note below.
+
+**✅ Correct (Nix-native host pathing):**
 
 ```nix
 # Ensure you inherit 'config' in your module arguments
@@ -222,7 +224,9 @@ cloister.sandboxes.dev.sandbox = {
 };
 ```
 
-### Common Nix replacements:
+`copyFiles.*.dest` is sandbox-side and must resolve under the sandbox home. It may be written as `$HOME/<path>` or as `${config.home.homeDirectory}/<path>`; Cloister normalizes the latter to `$HOME/<path>` internally so anonymized sandboxes can remap it to `/home/<username>`.
+
+### Common Nix replacements for host paths:
 
 - `$HOME` ➔ `config.home.homeDirectory`
 - `$XDG_CONFIG_HOME` ➔ `config.xdg.configHome`
@@ -731,6 +735,8 @@ See the sections above for usage examples and explanations.
 | `shell.customRcPath.bashrc` | nullOr path | `null` | Custom bashrc file to source inside the sandbox |
 | `shell.customRcPath.profile` | nullOr path | `null` | Custom profile file to source inside the sandbox |
 | `workerBroker.profiles` | attrsOf submodule | `{}` | Worker broker profiles keyed by profile name; non-empty profiles enable worker broker support |
+| `workerBroker.profiles.<name>.sandbox` | str | *(required)* | Child sandbox name this broker profile may launch |
+| `workerBroker.profiles.<name>.workspace.mode` | enum | *(required)* | Workspace exposure mode: `project-rw` or `project-overlay` |
 | `workerBroker.profiles.<name>.delegatedPerDirMounts` | attrsOf submodule | `{}` | Delegated mounts keyed by sandbox-relative path, with `mode`, `path`, and optional `subPath` |
 | `network.enable` | bool | `true` | Share host network namespace |
 | `network.namespace` | nullOr str | `null` | Linux network namespace to join (localhost-netns host services are reachable as `host.internal:<port>`) |
@@ -757,7 +763,7 @@ See the sections above for usage examples and explanations.
 | `sandbox.enforceStrictHomePolicy` | bool | `true` | Prevent sandboxing home dirs and dot-dirs |
 | `sandbox.disallowedPaths` | list of str | `["/", "/root"]` | Paths disallowed as sandbox directory |
 | `sandbox.copyFileBase` | str | `"${config.xdg.stateHome}/cloister"` | Base directory on the host where copyFiles are stored |
-| `sandbox.copyFiles` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into the sandbox state; missing sources fail startup |
+| `sandbox.copyFiles` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into the sandbox state; `src` must be a literal host path, `dest` must resolve under `$HOME`, and missing sources fail startup |
 | `sandbox.anonymize.enable` | bool | `false` | Present generic identity (username/hostname `ubuntu`, synthetic `/proc` files, blocked `/proc/sys`) |
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
 | `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |
