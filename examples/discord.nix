@@ -18,7 +18,7 @@
     extraPackages = with pkgs; [ discord ];
 
     # Display & rendering
-    gui.wayland.enable = true;
+    gui.enable = true;
 
     # Audio & screen sharing (PipeWire with filtering)
     audio.pipewire = {

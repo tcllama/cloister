@@ -831,177 +831,123 @@ let
         };
 
         gui = {
-          wayland = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Forward Wayland display socket into the sandbox. Requires wp-security-context-v1 by default.";
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Enable GUI integration for this sandbox. This forwards Wayland via
+              wp-security-context-v1, enables GPU rendering support with private
+              shared memory, and applies declared fonts, packages, and theme settings.
+            '';
+          };
+
+          fonts = lib.mkOption {
+            type = lib.types.listOf lib.types.package;
+            default = [ ];
+            description = ''
+              Font packages available inside the sandbox. A fontconfig configuration
+              is generated automatically from this list and set via FONTCONFIG_FILE.
+
+              When GUI is enabled this defaults to Noto fonts plus Noto emoji.
+              Set to [ ] with lib.mkForce to disable the generated fontconfig.
+            '';
+          };
+
+          packages = lib.mkOption {
+            type = lib.types.listOf lib.types.package;
+            default = [ ];
+            description = ''
+              GUI asset and plugin packages available inside the sandbox. Each
+              package's /share directory is added to XDG_DATA_DIRS and Qt plugin
+              directories are added to QT_PLUGIN_PATH.
+            '';
+          };
+
+          theme = {
+            gtk = lib.mkOption {
+              type = lib.types.str;
+              default = "Adwaita";
+              description = "GTK theme name. Sets GTK_THEME and gtk-theme-name inside the sandbox.";
             };
-            securityContext = {
-              enable = lib.mkOption {
-                type = lib.types.bool;
-                default = true;
-                description = ''
-                  Require the wp-security-context-v1 protocol for Wayland forwarding.
-                  When true (default), the sandbox refuses to start if the compositor
-                  does not support the protocol — preventing exposure of privileged
-                  extensions (screencopy, foreign-toplevel, virtual-keyboard).
-                  When false, falls back to raw Wayland socket passthrough.
-                '';
+
+            icon = lib.mkOption {
+              type = lib.types.str;
+              default = "Adwaita";
+              description = "Icon theme name written to GTK settings inside the sandbox.";
+            };
+
+            qt = {
+              platform = lib.mkOption {
+                type = lib.types.str;
+                default = "gtk3";
+                description = "Qt platform theme plugin name. The default 'gtk3' reads GTK_THEME.";
+              };
+
+              style = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = "Qt widget style override (e.g. 'adwaita', 'adwaita-dark', 'breeze', 'fusion'). When null, no QT_STYLE_OVERRIDE is set.";
               };
             };
           };
 
-          scaleFactor = lib.mkOption {
-            type = lib.types.nullOr lib.types.float;
+          desktopEntry = lib.mkOption {
+            type = lib.types.nullOr (
+              lib.types.submodule {
+                options = {
+                  name = lib.mkOption {
+                    type = lib.types.str;
+                    default = "";
+                    description = "Display name in the desktop entry. Falls back to cl-<name> when empty.";
+                  };
+                  execArgs = lib.mkOption {
+                    type = lib.types.str;
+                    default = "";
+                    description = ''Additional arguments appended after the sandbox binary path in the Exec line (e.g. "%U" for URL handling). Requires defaultCommand so the wrapper acts as an app launcher instead of opening an interactive shell.'';
+                  };
+                  icon = lib.mkOption {
+                    type = lib.types.str;
+                    default = "";
+                    description = "Icon name or path for the desktop entry.";
+                  };
+                  categories = lib.mkOption {
+                    type = lib.types.listOf lib.types.str;
+                    default = [ ];
+                    description = ''XDG categories for the desktop entry (e.g. ["Network" "WebBrowser"]).'';
+                  };
+                  mimeTypes = lib.mkOption {
+                    type = lib.types.listOf lib.types.str;
+                    default = [ ];
+                    description = "MIME types the application can handle.";
+                  };
+                  terminal = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "Whether the application should run in a terminal.";
+                  };
+                  genericName = lib.mkOption {
+                    type = lib.types.str;
+                    default = "";
+                    description = ''Generic name for the desktop entry (e.g. "Web Browser").'';
+                  };
+                  comment = lib.mkOption {
+                    type = lib.types.str;
+                    default = "";
+                    description = "Tooltip/comment for the desktop entry.";
+                  };
+                  startupNotify = lib.mkOption {
+                    type = lib.types.bool;
+                    default = false;
+                    description = "Whether the application supports startup notification.";
+                  };
+                };
+              }
+            );
             default = null;
             description = ''
-              Display scale factor for HiDPI rendering. When set, configures
-              GDK_SCALE, GDK_DPI_SCALE, and QT_SCALE_FACTOR environment
-              variables inside the sandbox.
-
-              Set this to the host's display scale (e.g. 2.0 for a 2× HiDPI
-              display) so that GUI applications render at the correct size.
+              XDG .desktop entry metadata for this sandbox. Set to null to disable
+              launcher generation; set to an attribute set to generate a launcher.
             '';
-          };
-
-          fonts = {
-            packages = lib.mkOption {
-              type = lib.types.listOf lib.types.package;
-              default = [ ];
-              description = ''
-                Font packages available inside the sandbox. A fontconfig configuration
-                is generated automatically from this list and set via FONTCONFIG_FILE,
-                replacing the host /etc/fonts dependency.
-
-                When GUI is enabled this defaults to [ pkgs.dejavu_fonts ].
-                Set to [ ] to disable the generated fontconfig entirely.
-              '';
-            };
-          };
-
-          gpu = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Bind /dev/dri for GPU-accelerated rendering inside the sandbox.";
-            };
-            shm = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Mount a private tmpfs at /dev/shm when GPU is enabled. Provides POSIX shared memory for GPU drivers without exposing host shared memory.";
-            };
-          };
-
-          desktopEntry = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Generate an XDG .desktop file for this sandbox so it appears in app launchers.";
-            };
-            name = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Display name in the desktop entry. Falls back to cl-<name> when empty.";
-            };
-            execArgs = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = ''Additional arguments appended after the sandbox binary path in the Exec line (e.g. "%U" for URL handling). Requires defaultCommand so the wrapper acts as an app launcher instead of opening an interactive shell.'';
-            };
-            icon = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Icon name or path for the desktop entry.";
-            };
-            categories = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = ''XDG categories for the desktop entry (e.g. ["Network" "WebBrowser"]).'';
-            };
-            mimeType = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = "MIME types the application can handle.";
-            };
-            terminal = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Whether the application should run in a terminal.";
-            };
-            genericName = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = ''Generic name for the desktop entry (e.g. "Web Browser").'';
-            };
-            comment = lib.mkOption {
-              type = lib.types.str;
-              default = "";
-              description = "Tooltip/comment for the desktop entry.";
-            };
-            startupNotify = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Whether the application supports startup notification.";
-            };
-          };
-
-          dataPackages = lib.mkOption {
-            type = lib.types.listOf lib.types.package;
-            default = [ ];
-            description = "Packages whose /share directories are added to XDG_DATA_DIRS. Used for icon theme, MIME type, and widget theme discovery when GUI is enabled.";
-          };
-
-          gtk = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Enable GTK theme integration. Sets GTK_THEME, writes GTK settings.ini theme values, and adds gtk3/gtk4 theme assets to XDG_DATA_DIRS.";
-            };
-
-            theme = lib.mkOption {
-              type = lib.types.str;
-              default = "Graphite-Light";
-              description = "GTK theme name. Sets GTK_THEME and gtk-theme-name inside the sandbox.";
-            };
-
-            iconTheme = lib.mkOption {
-              type = lib.types.str;
-              default = "Papirus-Light";
-              description = "GTK icon theme name. Sets gtk-icon-theme-name inside the sandbox.";
-            };
-
-            packages = lib.mkOption {
-              type = lib.types.listOf lib.types.package;
-              default = [ ];
-              description = "Additional packages providing GTK themes. Their /share directories are merged into XDG_DATA_DIRS.";
-            };
-          };
-
-          qt = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Enable Qt theme integration. Sets QT_QPA_PLATFORMTHEME so Qt apps follow the GTK theme.";
-            };
-
-            platformTheme = lib.mkOption {
-              type = lib.types.str;
-              default = "gtk3";
-              description = "Qt platform theme plugin name. The default 'gtk3' reads GTK_THEME and is built into qtbase (no extra packages needed).";
-            };
-
-            style = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "Qt widget style override (e.g. 'adwaita', 'adwaita-dark', 'breeze', 'fusion'). When null, the platform theme controls the style.";
-            };
-
-            packages = lib.mkOption {
-              type = lib.types.listOf lib.types.package;
-              default = [ ];
-              description = "Packages providing Qt style plugins. Their plugin directories are added to QT_PLUGIN_PATH.";
-            };
           };
         };
 
@@ -1332,7 +1278,7 @@ let
       # --- Submodule config: defaults + computed registry ---
       config = lib.mkMerge [
         (lib.mkIf (config.preset == "hardened") {
-          gui.wayland.enable = lib.mkDefault false;
+          gui.enable = lib.mkDefault false;
 
           ssh.enable = lib.mkDefault false;
           git.enable = lib.mkDefault false;
@@ -1349,7 +1295,7 @@ let
         (lib.mkIf (config.preset == "developer") {
           shell.hostConfig = lib.mkDefault true;
 
-          gui.wayland.enable = lib.mkDefault false;
+          gui.enable = lib.mkDefault false;
 
           network.enable = lib.mkDefault true;
           git.enable = lib.mkDefault true;
@@ -1372,7 +1318,7 @@ let
           dbus.enable = lib.mkDefault true;
           dbus.notifications = lib.mkDefault true;
 
-          gui.wayland.enable = lib.mkDefault true;
+          gui.enable = lib.mkDefault true;
 
           audio = {
             pipewire = {
@@ -1389,7 +1335,7 @@ let
           dbus.enable = lib.mkDefault true;
           dbus.notifications = lib.mkDefault true;
 
-          gui.wayland.enable = lib.mkDefault true;
+          gui.enable = lib.mkDefault true;
 
           sandbox.seccomp.allowChromiumSandbox = lib.mkDefault true;
 
@@ -1573,30 +1519,20 @@ let
           audio.pipewire.filters.enable = lib.mkDefault config.audio.pipewire.enable;
 
           gui = {
-            # Auto-enable GPU when Wayland is active
-            gpu.enable = lib.mkDefault config.gui.wayland.enable;
-
-            # Auto-enable GTK theme integration when Wayland is active
-            gtk.enable = lib.mkDefault config.gui.wayland.enable;
-
-            # Default data packages for GUI sandboxes: icon theme fallback + conditionally GTK theme assets
-            dataPackages = lib.mkDefault (
-              [
+            packages = lib.mkDefault (
+              lib.optionals config.gui.enable [
                 pkgs.hicolor-icon-theme
-                pkgs.papirus-icon-theme
-              ]
-              ++ lib.optionals config.gui.gtk.enable [
+                pkgs.adwaita-icon-theme
                 pkgs.gtk3
                 pkgs.gtk4
                 pkgs.gsettings-desktop-schemas
-                pkgs.graphite-gtk-theme
               ]
             );
 
-            # Default font packages for GUI sandboxes
-            fonts.packages = lib.mkDefault (
-              lib.optionals config.gui.wayland.enable [
-                pkgs.dejavu_fonts
+            fonts = lib.mkDefault (
+              lib.optionals config.gui.enable [
+                pkgs.noto-fonts
+                pkgs.noto-fonts-color-emoji
               ]
             );
           };

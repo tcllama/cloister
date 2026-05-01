@@ -12,24 +12,18 @@ let
       sandboxes.browser = {
         defaultCommand = [ "firefox" ];
         gui = {
-          wayland.enable = true;
-          scaleFactor = 1.5;
-          gtk = {
-            enable = true;
-            theme = "Graphite-Light";
-            iconTheme = "Papirus-Light";
+          enable = true;
+          theme = {
+            gtk = "Adwaita";
+            icon = "Adwaita";
+            qt.style = "fusion";
           };
-          qt = {
-            enable = true;
-            style = "fusion";
-            packages = [ pkgs.qt6.qtbase ];
-          };
+          packages = [ pkgs.qt6.qtbase ];
           desktopEntry = {
-            enable = true;
             execArgs = "%U";
             icon = "firefox";
             categories = [ "Network" ];
-            mimeType = [ "x-scheme-handler/https" ];
+            mimeTypes = [ "x-scheme-handler/https" ];
             terminal = true;
             genericName = "Web Browser";
             comment = "Sandboxed browser";
@@ -66,27 +60,7 @@ let
     cloister = {
       enable = true;
       sandboxes.browser = {
-        gui.wayland.enable = false;
-      };
-    };
-  };
-
-  rawWaylandEval = hm {
-    cloister = {
-      enable = true;
-      sandboxes.browser.gui = {
-        wayland.enable = true;
-        wayland.securityContext.enable = false;
-      };
-    };
-  };
-
-  invalidScale = hm {
-    cloister = {
-      enable = true;
-      sandboxes.browser = {
-        gui.wayland.enable = true;
-        gui.scaleFactor = 0.0;
+        gui.enable = false;
       };
     };
   };
@@ -95,7 +69,7 @@ let
     cloister = {
       enable = true;
       sandboxes.browser = {
-        gui.wayland.enable = true;
+        gui.enable = true;
         sandbox.env.FONTCONFIG_FILE = "/tmp/fonts.conf";
       };
     };
@@ -115,7 +89,7 @@ let
     cloister = {
       enable = true;
       sandboxes.browser = {
-        gui.wayland.enable = true;
+        gui.enable = true;
         sandbox.passthroughEnv = [ "XDG_RUNTIME_DIR" ];
       };
     };
@@ -125,7 +99,7 @@ let
     cloister = {
       enable = true;
       sandboxes.browser = {
-        gui.wayland.enable = true;
+        gui.enable = true;
         dbus = {
           enable = true;
           notifications = true;
@@ -172,8 +146,8 @@ let
     cloister = {
       enable = true;
       sandboxes.browser.gui = {
-        wayland.enable = true;
-        desktopEntry.enable = true;
+        enable = true;
+        desktopEntry = { };
       };
     };
   };
@@ -241,9 +215,8 @@ let
       sandboxes.browser = {
         defaultCommand = [ "firefox" ];
         gui = {
-          wayland.enable = true;
+          enable = true;
           desktopEntry = {
-            enable = true;
             execArgs = "%U; touch /tmp/pwned";
           };
         };
@@ -325,12 +298,10 @@ let
   betaConfig = multiPipewireEval.config.cloister._internal.sandboxConfigs.beta;
   browserStaticArgs = builtins.toJSON sandboxConfig.static_bwrap_args;
   browserDynamicBinds = builtins.toJSON sandboxConfig.dynamic_binds;
-  rawWaylandStaticArgs = builtins.toJSON rawWaylandConfig.static_bwrap_args;
   pipewireConf = eval.config.xdg.configFile."pipewire/pipewire.conf.d/99-cloister.conf".text;
   wireplumberConf =
     eval.config.xdg.configFile."wireplumber/wireplumber.conf.d/99-cloister-browser.conf".text;
   guiOffConfig = guiOffEval.config.cloister._internal.sandboxConfigs.browser;
-  rawWaylandConfig = rawWaylandEval.config.cloister._internal.sandboxConfigs.browser;
   allPortalsConfig = allPortalsEval.config.cloister._internal.sandboxConfigs.browser;
   sshOnlyConfig = sshOnlyEval.config.cloister._internal.sandboxConfigs.browser;
   dbusDisabledConfig = dbusDisabledEval.config.cloister._internal.sandboxConfigs.browser;
@@ -375,10 +346,7 @@ let
     (checks.expectContains "dbus proxy wrapper path renders" "cloister-dbus-proxy-browser"
       dbusProxyPath
     )
-    (checks.expectContains "gtk theme renders" ''"GTK_THEME","Graphite-Light"'' browserStaticArgs)
-    (checks.expectContains "gtk default theme renders" ''"GTK_THEME","Graphite-Light"''
-      rawWaylandStaticArgs
-    )
+    (checks.expectContains "gtk theme renders" ''"GTK_THEME","Adwaita"'' browserStaticArgs)
     (checks.expectContains "gtk settings gtk3 bind renders"
       ''"dest":"$HOME/.config/gtk-3.0/settings.ini"''
       browserDynamicBinds
@@ -390,10 +358,6 @@ let
     (checks.expectContains "qt style renders" ''"QT_STYLE_OVERRIDE","fusion"'' browserStaticArgs)
     (checks.expectContains "fontconfig file renders" ''"FONTCONFIG_FILE"'' browserStaticArgs)
     (checks.expectContains "xdg data dirs render" ''"XDG_DATA_DIRS"'' browserStaticArgs)
-    (checks.expectContains "scale factor renders GDK scale" ''"GDK_SCALE","2"'' browserStaticArgs)
-    (checks.expectContains "scale factor renders QT scale" ''"QT_SCALE_FACTOR","1.500000"''
-      browserStaticArgs
-    )
     (checks.expectNotContains "ssh alone does not force xdg runtime passthrough" ''"XDG_RUNTIME_DIR"'' (
       builtins.toJSON sshOnlyConfig.passthrough_env
     ))
@@ -404,13 +368,7 @@ let
       ''"XDG_RUNTIME_DIR"''
       (builtins.toJSON sandboxConfig.passthrough_env)
     )
-    (checks.expectEq "wayland toggle renders" true sandboxConfig.wayland_enable)
-    (checks.expectEq "wayland security context defaults on" true sandboxConfig.wayland_security_context)
-    (checks.expectEq "wayland security context can be disabled" false
-      rawWaylandConfig.wayland_security_context
-    )
-    (checks.expectEq "gpu auto-enables with gui" true sandboxConfig.gpu_enable)
-    (checks.expectEq "gpu shared memory defaults on" true sandboxConfig.gpu_shm)
+    (checks.expectEq "gui toggle renders" true sandboxConfig.gui_enable)
     (checks.expectContains "portal flatpak marker bind renders" "/.flatpak-info" browserDynamicBinds)
     (checks.expectContains "portal runtime flatpak info bind renders" "$XDG_RUNTIME_DIR/flatpak-info"
       browserDynamicBinds
@@ -485,7 +443,7 @@ let
     )
     (checks.expectAssertionMessage "desktop entry requires default command"
       desktopWithoutCommand.assertions
-      "gui.desktopEntry.enable requires defaultCommand to be set"
+      "gui.desktopEntry requires defaultCommand to be set"
     )
     (checks.expectAssertionMessage "anonymize rejects native pipewire"
       anonymizeNativePipewire.assertions
@@ -500,9 +458,6 @@ let
     )
     (checks.expectAssertionMessage "pulseOnly rejects video input" pulseOnlyVideoConflict.assertions
       "audio.pipewire.pulseOnly is audio-only and does not support audio.pipewire.filters.videoIn"
-    )
-    (checks.expectAssertionMessage "scale factor validation rejects zero" invalidScale.assertions
-      "gui.scaleFactor must be a positive value in 0.25 increments"
     )
     (checks.expectAssertionMessage "gui managed fontconfig cannot be overridden"
       guiEnvOverride.assertions

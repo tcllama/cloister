@@ -43,7 +43,6 @@
 
     # App launcher integration
     gui.desktopEntry = {
-      enable = true;
       name = "Chromium (Sandboxed)";
       execArgs = "%U";
       icon = "chromium";
@@ -53,7 +52,7 @@
         "Network"
         "WebBrowser"
       ];
-      mimeType = [
+      mimeTypes = [
         "text/html"
         "application/xhtml+xml"
         "x-scheme-handler/http"

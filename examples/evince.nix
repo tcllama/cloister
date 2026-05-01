@@ -18,7 +18,7 @@
     extraPackages = with pkgs; [ evince ];
 
     # Display
-    gui.wayland.enable = true;
+    gui.enable = true;
 
     # D-Bus / portals
     dbus.enable = true;
@@ -29,7 +29,6 @@
 
     # App launcher
     gui.desktopEntry = {
-      enable = true;
       name = "Document Viewer (Sandboxed)";
       execArgs = "%U";
       icon = "org.gnome.Evince";
@@ -41,7 +40,7 @@
         "Office"
         "Viewer"
       ];
-      mimeType = [
+      mimeTypes = [
         "application/pdf"
         "application/postscript"
         "image/vnd.djvu"

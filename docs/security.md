@@ -46,7 +46,7 @@ This prevents a compromised sandbox from using SSH keys it shouldn't have access
 
 ### Wayland Security Context
 
-When `gui.wayland.securityContext.enable` is set, the sandbox connects through `cloister-sandbox`'s built-in Wayland support, which creates a new Wayland connection using the `wp-security-context-v1` protocol. The compositor can then apply per-client restrictions (e.g., preventing screenshot capture or input simulation). This requires compositor support (sway 1.9+, Hyprland, niri, labwc 0.8.2+).
+When `gui.enable` is set, the sandbox connects through `cloister-sandbox`'s built-in Wayland support, which creates a new Wayland connection using the `wp-security-context-v1` protocol. The compositor can then apply per-client restrictions (e.g., preventing screenshot capture or input simulation). This requires compositor support (sway 1.9+, Hyprland, niri, labwc 0.8.2+).
 
 ### D-Bus Proxy
 

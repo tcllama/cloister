@@ -132,20 +132,6 @@ in
     }
   )
   {
-    assertion =
-      sCfg.gui.scaleFactor == null
-      || (
-        sCfg.gui.scaleFactor > 0.0
-        && (
-          let
-            scaled = sCfg.gui.scaleFactor * 4.0;
-          in
-          builtins.floor scaled == builtins.ceil scaled
-        )
-      );
-    message = "cloister.sandboxes.${name}: gui.scaleFactor must be a positive value in 0.25 increments (e.g. 1.0, 1.25, 1.5, 1.75, 2.0).";
-  }
-  {
     assertion = duplicateDests == [ ];
     message = "cloister.sandboxes.${name}: duplicate bind mount destinations: ${lib.concatStringsSep ", " duplicateDests}";
   }
@@ -202,8 +188,8 @@ in
     message = "cloister.sandboxes.${name}: bind/copy/dir/tmpfs/symlink/env paths cannot contain variable expansions ($) or newlines: ${lib.concatStringsSep ", " unsafePaths}";
   }
   {
-    assertion = !sCfg.gui.desktopEntry.enable || guiEnabled;
-    message = "cloister.sandboxes.${name}: gui.desktopEntry.enable requires gui.wayland.enable.";
+    assertion = sCfg.gui.desktopEntry == null || guiEnabled;
+    message = "cloister.sandboxes.${name}: gui.desktopEntry requires gui.enable = true.";
   }
   {
     assertion = !workerBrokerCfg.enable || workerBrokerCfg.spawnableProfiles != { };
@@ -255,12 +241,13 @@ in
   }
   {
     assertion =
-      !sCfg.gui.desktopEntry.enable || (sCfg.defaultCommand != null && sCfg.defaultCommand != [ ]);
-    message = "cloister.sandboxes.${name}: gui.desktopEntry.enable requires defaultCommand to be set so the launcher does not open an interactive shell.";
+      sCfg.gui.desktopEntry == null || (sCfg.defaultCommand != null && sCfg.defaultCommand != [ ]);
+    message = "cloister.sandboxes.${name}: gui.desktopEntry requires defaultCommand to be set so the launcher does not open an interactive shell.";
   }
   {
     assertion =
-      sCfg.gui.desktopEntry.execArgs == ""
+      sCfg.gui.desktopEntry == null
+      || sCfg.gui.desktopEntry.execArgs == ""
       ||
         builtins.match ''
           .*['";|&

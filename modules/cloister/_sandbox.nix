@@ -194,8 +194,7 @@ let
     name: sCfg:
     let
       shellLib = shells.${sCfg.shell.name};
-      guiEnabled = sCfg.gui.wayland.enable;
-      gpuEnabled = sCfg.gui.gpu.enable;
+      guiEnabled = sCfg.gui.enable;
       # --- Anonymization ---
       anonymize = sCfg.sandbox.anonymize.enable;
       sandboxHome = "/home/${sCfg.sandbox.anonymize.username}";
@@ -453,17 +452,13 @@ let
         }
       ];
 
-      gtkSettingsIni =
-        if sCfg.gui.gtk.enable then
-          pkgs.writeText "cloister-gtk-settings-${name}.ini" ''
-            [Settings]
-            gtk-theme-name=${sCfg.gui.gtk.theme}
-            gtk-icon-theme-name=${sCfg.gui.gtk.iconTheme}
-          ''
-        else
-          null;
+      gtkSettingsIni = pkgs.writeText "cloister-gtk-settings-${name}.ini" ''
+        [Settings]
+        gtk-theme-name=${sCfg.gui.theme.gtk}
+        gtk-icon-theme-name=${sCfg.gui.theme.icon}
+      '';
 
-      guiBinds = lib.optionals sCfg.gui.gtk.enable [
+      guiBinds = lib.optionals guiEnabled [
         {
           src = gtkSettingsIni;
           dest = "$HOME/.config/gtk-3.0/settings.ini";
@@ -545,20 +540,18 @@ let
 
       portalEnv = lib.optionalAttrs sCfg.dbus.portal.fileChooser { GTK_USE_PORTAL = "1"; };
 
-      guiDataPackages = sCfg.gui.dataPackages ++ lib.optionals sCfg.gui.gtk.enable sCfg.gui.gtk.packages;
+      guiDataPackages = sCfg.gui.packages;
 
       qtPluginPaths = lib.concatMap (pkg: [
         "${pkg}/lib/qt-6/plugins"
         "${pkg}/lib/qt-5/plugins"
-      ]) sCfg.gui.qt.packages;
+      ]) sCfg.gui.packages;
 
       guiEnv = lib.optionalAttrs guiEnabled (
         {
           NO_AT_BRIDGE = "1";
-        }
-        // lib.optionalAttrs sCfg.gui.wayland.enable { NIXOS_OZONE_WL = "1"; }
-        // lib.optionalAttrs sCfg.gui.gtk.enable {
-          GTK_THEME = sCfg.gui.gtk.theme;
+          NIXOS_OZONE_WL = "1";
+          GTK_THEME = sCfg.gui.theme.gtk;
           GIO_EXTRA_MODULES = "${pkgs.dconf.lib}/lib/gio/modules";
           GSETTINGS_SCHEMA_DIR = lib.concatStringsSep ":" [
             "${pkgs.glib}/share/glib-2.0/schemas"
@@ -566,33 +559,20 @@ let
             "${pkgs.gtk3}/share/glib-2.0/schemas"
           ];
           GDK_PIXBUF_MODULE_FILE = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
+          QT_QPA_PLATFORMTHEME = sCfg.gui.theme.qt.platform;
         }
-        // lib.optionalAttrs sCfg.gui.qt.enable {
-          QT_QPA_PLATFORMTHEME = sCfg.gui.qt.platformTheme;
+        // lib.optionalAttrs (sCfg.gui.theme.qt.style != null) {
+          QT_STYLE_OVERRIDE = sCfg.gui.theme.qt.style;
         }
-        // lib.optionalAttrs (sCfg.gui.qt.enable && sCfg.gui.qt.style != null) {
-          QT_STYLE_OVERRIDE = sCfg.gui.qt.style;
-        }
-        // lib.optionalAttrs (sCfg.gui.qt.enable && qtPluginPaths != [ ]) {
+        // lib.optionalAttrs (qtPluginPaths != [ ]) {
           QT_PLUGIN_PATH = lib.concatStringsSep ":" qtPluginPaths;
         }
         // lib.optionalAttrs (guiDataPackages != [ ]) {
           XDG_DATA_DIRS = lib.concatStringsSep ":" (map (pkg: "${pkg}/share") guiDataPackages);
         }
-        // lib.optionalAttrs (sCfg.gui.scaleFactor != null) (
-          let
-            gdkScale = builtins.ceil sCfg.gui.scaleFactor;
-            gdkDpiScale = sCfg.gui.scaleFactor / gdkScale;
-          in
-          {
-            GDK_SCALE = toString gdkScale;
-            GDK_DPI_SCALE = toString gdkDpiScale;
-            QT_SCALE_FACTOR = toString sCfg.gui.scaleFactor;
-          }
-        )
-        // lib.optionalAttrs (sCfg.gui.fonts.packages != [ ]) {
+        // lib.optionalAttrs (sCfg.gui.fonts != [ ]) {
           FONTCONFIG_FILE = pkgs.makeFontsConf {
-            fontDirectories = sCfg.gui.fonts.packages;
+            fontDirectories = sCfg.gui.fonts;
           };
         }
       );
@@ -880,7 +860,6 @@ let
           shellLib
           anonymize
           sandboxHome
-          gpuEnabled
           seccompFilter
           allDirs
           managedFileDirsOverlapping
@@ -1381,10 +1360,10 @@ in
       in
       pipewireConfigs // wireplumberConfigs;
 
-    # Desktop entries for sandboxes with gui.desktopEntry.enable = true
+    # Desktop entries for sandboxes with gui.desktopEntry set
     xdg.desktopEntries =
       let
-        desktopSandboxes = lib.filterAttrs (_: sCfg: sCfg.gui.desktopEntry.enable) cfg.sandboxes;
+        desktopSandboxes = lib.filterAttrs (_: sCfg: sCfg.gui.desktopEntry != null) cfg.sandboxes;
       in
       lib.mapAttrs' (
         name: sCfg:
@@ -1406,7 +1385,7 @@ in
           // lib.optionalAttrs (de.categories != [ ]) {
             inherit (de) categories;
           }
-          // lib.optionalAttrs (de.mimeType != [ ]) { inherit (de) mimeType; }
+          // lib.optionalAttrs (de.mimeTypes != [ ]) { mimeType = de.mimeTypes; }
           // lib.optionalAttrs (de.genericName != "") {
             inherit (de) genericName;
           }

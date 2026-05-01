@@ -2261,15 +2261,60 @@ fn run() -> i32 {
     // Wayland
     let _wayland_keep_alive;
     let wayland_socket_path;
-    if config.wayland_enable {
+    if config.gui_enable {
         if std::env::var("WAYLAND_DISPLAY")
             .map(|d| !d.is_empty())
             .unwrap_or(false)
         {
-            if config.wayland_security_context {
-                let wayland_dir = format!("{host_xdg_runtime_dir}/cloister/wayland");
-                if let Err(e) = std::fs::create_dir_all(&wayland_dir) {
-                    eprintln!("{prefix}: wayland runtime dir: {e}");
+            let wayland_dir = format!("{host_xdg_runtime_dir}/cloister/wayland");
+            if let Err(e) = std::fs::create_dir_all(&wayland_dir) {
+                eprintln!("{prefix}: wayland runtime dir: {e}");
+                process::exit(cleanup_and_exit(CleanupState {
+                    ssh_handle: ssh_filter_handle,
+                    dbus_proxy: None,
+                    pulse_bridge,
+                    wayland_socket: None,
+                    machine_id_path: None,
+                    proc_privacy_state: None,
+                    anonymize_file_paths: Vec::new(),
+                    flatpak_portal_state,
+                    broker_session_record_path,
+                    broker_listener,
+                }));
+            }
+            let socket = format!("{wayland_dir}/{}", process::id());
+            if !wayland::probe() {
+                eprintln!("{prefix}: compositor does not support wp-security-context-v1.");
+                eprintln!("Use a supported compositor (sway 1.9+, Hyprland, niri, labwc 0.8.2+).");
+                process::exit(cleanup_and_exit(CleanupState {
+                    ssh_handle: ssh_filter_handle,
+                    dbus_proxy: None,
+                    pulse_bridge,
+                    wayland_socket: None,
+                    machine_id_path: None,
+                    proc_privacy_state: None,
+                    anonymize_file_paths: Vec::new(),
+                    flatpak_portal_state,
+                    broker_session_record_path,
+                    broker_listener,
+                }));
+            }
+            let app_id = format!("cloister-{}", config.name);
+            match wayland::setup_context(&socket, "cloister", &app_id) {
+                Ok(fd) => {
+                    extra_args.extend([
+                        "--ro-bind".to_string(),
+                        socket.clone(),
+                        format!("{sandbox_xdg_runtime_dir}/wayland-1"),
+                        "--setenv".to_string(),
+                        "WAYLAND_DISPLAY".to_string(),
+                        "wayland-1".to_string(),
+                    ]);
+                    _wayland_keep_alive = Some(fd);
+                    wayland_socket_path = Some(socket);
+                }
+                Err(e) => {
+                    eprintln!("{prefix}: wayland setup: {e}");
                     process::exit(cleanup_and_exit(CleanupState {
                         ssh_handle: ssh_filter_handle,
                         dbus_proxy: None,
@@ -2283,65 +2328,6 @@ fn run() -> i32 {
                         broker_listener,
                     }));
                 }
-                let socket = format!("{wayland_dir}/{}", process::id());
-                if !wayland::probe() {
-                    eprintln!("{prefix}: compositor does not support wp-security-context-v1.");
-                    eprintln!(
-                        "Either use a supported compositor (sway 1.9+, Hyprland, niri, labwc 0.8.2+)"
-                    );
-                    eprintln!(
-                        "or set gui.wayland.securityContext.enable = false for raw socket passthrough."
-                    );
-                    process::exit(cleanup_and_exit(CleanupState {
-                        ssh_handle: ssh_filter_handle,
-                        dbus_proxy: None,
-                        pulse_bridge,
-                        wayland_socket: None,
-                        machine_id_path: None,
-                        proc_privacy_state: None,
-                        anonymize_file_paths: Vec::new(),
-                        flatpak_portal_state,
-                        broker_session_record_path,
-                        broker_listener,
-                    }));
-                }
-                let app_id = format!("cloister-{}", config.name);
-                match wayland::setup_context(&socket, "cloister", &app_id) {
-                    Ok(fd) => {
-                        extra_args.extend([
-                            "--ro-bind".to_string(),
-                            socket.clone(),
-                            format!("{sandbox_xdg_runtime_dir}/wayland-1"),
-                            "--setenv".to_string(),
-                            "WAYLAND_DISPLAY".to_string(),
-                            "wayland-1".to_string(),
-                        ]);
-                        _wayland_keep_alive = Some(fd);
-                        wayland_socket_path = Some(socket);
-                    }
-                    Err(e) => {
-                        eprintln!("{prefix}: wayland setup: {e}");
-                        process::exit(cleanup_and_exit(CleanupState {
-                            ssh_handle: ssh_filter_handle,
-                            dbus_proxy: None,
-                            pulse_bridge,
-                            wayland_socket: None,
-                            machine_id_path: None,
-                            proc_privacy_state: None,
-                            anonymize_file_paths: Vec::new(),
-                            flatpak_portal_state,
-                            broker_session_record_path,
-                            broker_listener,
-                        }));
-                    }
-                }
-            } else {
-                extra_args.extend(features::wayland_raw_args(
-                    &host_xdg_runtime_dir,
-                    &sandbox_xdg_runtime_dir,
-                ));
-                _wayland_keep_alive = None;
-                wayland_socket_path = None;
             }
             // Electron/Chromium apps need this to use native Wayland via Ozone
             extra_args.extend([
@@ -2359,8 +2345,8 @@ fn run() -> i32 {
     }
 
     // GPU
-    if config.gpu_enable {
-        extra_args.extend(features::gpu_args(config.gpu_shm));
+    if config.gui_enable {
+        extra_args.extend(features::gpu_args());
     }
 
     // Device binds
@@ -2756,7 +2742,7 @@ fn cleanup_and_exit(state: CleanupState) -> i32 {
 
 fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
     config.dbus_enable
-        || config.wayland_enable
+        || config.gui_enable
         || config.pipewire_pulse_config_path.is_some()
         || config.pipewire_socket_name.is_some()
         || config.worker_broker.enable
@@ -2765,7 +2751,7 @@ fn requires_xdg_runtime_dir(config: &SandboxConfig) -> bool {
 fn validate_xdg_runtime_dir(config: &SandboxConfig, xdg_runtime_dir: &str) -> Result<(), String> {
     if requires_xdg_runtime_dir(config) && xdg_runtime_dir.is_empty() {
         return Err(
-            "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or worker broker features."
+            "XDG_RUNTIME_DIR must be set when using D-Bus, GUI, audio, or worker broker features."
                 .to_string(),
         );
     }
@@ -2924,7 +2910,7 @@ mod tests {
 
     fn config_with_flags(
         dbus_enable: bool,
-        wayland_enable: bool,
+        gui_enable: bool,
         pipewire_socket_name: Option<String>,
         pipewire_pulse_config_path: Option<String>,
         ssh_enable: bool,
@@ -2944,7 +2930,7 @@ mod tests {
             "copy_file_base": "/home/user/.local/state/cloister",
             "git_path": "/nix/store/xxx-git/bin/git",
             "dbus_enable": dbus_enable,
-            "wayland_enable": wayland_enable,
+            "gui_enable": gui_enable,
             "pipewire_socket_name": pipewire_socket_name,
             "pipewire_pulse_config_path": pipewire_pulse_config_path,
             "ssh_enable": ssh_enable
@@ -5214,11 +5200,9 @@ mod tests {
         );
         let result = validate_xdg_runtime_dir(&config, "");
         assert!(result.is_err());
-        assert!(
-            result.unwrap_err().contains(
-                "XDG_RUNTIME_DIR must be set when using D-Bus, Wayland, audio, or worker broker features."
-            )
-        );
+        assert!(result.unwrap_err().contains(
+            "XDG_RUNTIME_DIR must be set when using D-Bus, GUI, audio, or worker broker features."
+        ));
     }
 
     #[test]

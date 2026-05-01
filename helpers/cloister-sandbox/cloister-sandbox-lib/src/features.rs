@@ -33,49 +33,6 @@ pub fn pulseaudio_args_with_source(host_socket: &str, sandbox_socket: &str) -> V
     ]
 }
 
-/// Build Wayland forwarding arguments (non-security-context mode).
-pub fn wayland_raw_args(host_xdg_runtime_dir: &str, sandbox_xdg_runtime_dir: &str) -> Vec<String> {
-    let display = match std::env::var("WAYLAND_DISPLAY") {
-        Ok(d) if !d.is_empty() => d,
-        _ => return Vec::new(),
-    };
-
-    let mut args = Vec::new();
-    if display.starts_with('/') {
-        if let Err(e) = socket::validate_existing_socket(&display) {
-            eprintln!("Warning: invalid WAYLAND_DISPLAY socket '{display}': {e}");
-            return Vec::new();
-        }
-        args.extend([
-            "--ro-bind-try".to_string(),
-            display.clone(),
-            display.clone(),
-        ]);
-    } else {
-        if display.contains('/') || display == "." || display == ".." {
-            eprintln!("Warning: invalid WAYLAND_DISPLAY value '{display}'");
-            return Vec::new();
-        }
-        if host_xdg_runtime_dir.is_empty() || sandbox_xdg_runtime_dir.is_empty() {
-            eprintln!("Warning: WAYLAND_DISPLAY is set but XDG_RUNTIME_DIR is empty");
-            return Vec::new();
-        }
-        let full_path = format!("{host_xdg_runtime_dir}/{display}");
-        let sandbox_path = format!("{sandbox_xdg_runtime_dir}/{display}");
-        if let Err(e) = socket::validate_existing_socket(&full_path) {
-            eprintln!("Warning: invalid WAYLAND_DISPLAY socket '{full_path}': {e}");
-            return Vec::new();
-        }
-        args.extend(["--ro-bind-try".to_string(), full_path, sandbox_path]);
-    }
-    args.extend([
-        "--setenv".to_string(),
-        "WAYLAND_DISPLAY".to_string(),
-        display,
-    ]);
-    args
-}
-
 /// Discover GPU PCI sysfs device paths by resolving `/sys/class/drm/card*` symlinks.
 ///
 /// Each `cardN` entry is a symlink like:
@@ -223,7 +180,7 @@ pub fn discover_dri_char_entries() -> Vec<(String, String)> {
 }
 
 /// Build GPU acceleration arguments.
-pub fn gpu_args(shm: bool) -> Vec<String> {
+pub fn gpu_args() -> Vec<String> {
     let mut args = Vec::new();
     if Path::new("/dev/dri").is_dir() {
         args.extend([
@@ -277,14 +234,12 @@ pub fn gpu_args(shm: bool) -> Vec<String> {
         args.extend(["--symlink".to_string(), link_target, symlink_path]);
     }
 
-    if shm {
-        args.extend([
-            "--perms".to_string(),
-            "1777".to_string(),
-            "--tmpfs".to_string(),
-            "/dev/shm".to_string(),
-        ]);
-    }
+    args.extend([
+        "--perms".to_string(),
+        "1777".to_string(),
+        "--tmpfs".to_string(),
+        "/dev/shm".to_string(),
+    ]);
     args
 }
 
@@ -774,21 +729,12 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn gpu_args_shm_when_requested() {
-        let args = gpu_args(true);
+    fn gpu_args_includes_private_shm() {
+        let args = gpu_args();
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--tmpfs" && w[1] == "/dev/shm"),
-            "Expected --tmpfs /dev/shm when shm=true"
-        );
-    }
-
-    #[test]
-    fn gpu_args_no_shm_when_disabled() {
-        let args = gpu_args(false);
-        assert!(
-            !args.contains(&"/dev/shm".to_string()),
-            "Expected no /dev/shm when shm=false"
+            "Expected --tmpfs /dev/shm"
         );
     }
 

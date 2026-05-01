@@ -2,7 +2,7 @@
 
 ## Validating the Wayland security context
 
-When `gui.wayland.securityContext.enable = true`, the sandbox uses the `wp-security-context-v1` protocol to tell the compositor that the client is sandboxed. The compositor then filters which protocol globals are advertised - privileged extensions (screencopy, virtual keyboard injection, etc.) should be hidden.
+When `gui.enable = true`, the sandbox uses the `wp-security-context-v1` protocol to tell the compositor that the client is sandboxed. The compositor then filters which protocol globals are advertised - privileged extensions (screencopy, virtual keyboard injection, etc.) should be hidden.
 
 The `cloister-wayland-validate` helper connects to the Wayland display, enumerates all advertised globals, and checks them against a list of 19 known privileged protocols.
 

@@ -265,7 +265,7 @@ The options most users reach for first are:
 - `extraPackages` - add tools to the sandbox PATH
 - `sandbox.extraBinds.*` - persist config, caches, and per-project state explicitly
 - `network.enable` or `network.namespace` - disable network or route through a named namespace
-- `gui.wayland.enable`, `dbus.enable`, `audio.pipewire.*` - opt into desktop integration
+- `gui.enable`, `dbus.enable`, `audio.pipewire.*` - opt into desktop integration
 - `ssh.enable` and `git.enable` - expose host SSH agent or git config only where needed
 - `cloister-diagnostics` package - install validator helpers for Wayland, D-Bus, seccomp, and PipeWire when needed
 

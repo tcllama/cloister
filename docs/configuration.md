@@ -18,7 +18,7 @@ cloister = {
   };
   sandboxes.pdf = {
     network.enable = false;  # no network
-    gui.wayland.enable = true;
+    gui.enable = true;
     extraPackages = with pkgs; [ zathura imv ];
     registry.commands = [ "zathura" "imv" ];
   };
@@ -431,22 +431,15 @@ When enabled, `.gitconfig` and `.config/git/config` are bound read-only. This in
 
 ## Desktop integration
 
-### Wayland
+### GUI display and rendering
 
 ```nix
-cloister.sandboxes.dev.gui.wayland.enable = true;
+cloister.sandboxes.dev.gui.enable = true;
 ```
 
-By default, `wp-security-context-v1` is required - the compositor filters which protocol globals are advertised to the sandbox, hiding privileged extensions (screencopy, virtual keyboard injection, etc.). Disable with `gui.wayland.securityContext.enable = false` for raw socket passthrough.
+`gui.enable` is the single switch for graphical applications. It forwards Wayland through `wp-security-context-v1`; the compositor filters which protocol globals are advertised to the sandbox, hiding privileged extensions such as screencopy, foreign-toplevel, and virtual keyboard protocols. The sandbox refuses to start if the compositor does not support the security context protocol.
 
-### GPU acceleration
-
-```nix
-cloister.sandboxes.dev.gui.gpu.enable = true;  # auto-enabled when Wayland is on
-cloister.sandboxes.dev.gui.gpu.shm = true;     # default - private tmpfs at /dev/shm for GPU drivers
-```
-
-Binds `/dev/dri` into the sandbox for hardware-accelerated rendering. Auto-enabled when Wayland is active, but can be explicitly disabled with `gui.gpu.enable = false`. A private tmpfs is mounted at `/dev/shm` by default (not the host's `/dev/shm`) since most GPU drivers and multi-process applications (Chromium, Firefox) require POSIX shared memory.
+GUI sandboxes also enable GPU rendering support and mount a private tmpfs at `/dev/shm` for GPU drivers and multi-process applications such as Chromium and Firefox. The host's `/dev/shm` is not exposed.
 
 In addition to `/dev/dri`, the sandbox binary automatically detects and binds the following paths when they exist (all as `--ro-bind`, not `--dev-bind`):
 
@@ -456,107 +449,86 @@ In addition to `/dev/dri`, the sandbox binary automatically detects and binds th
 
 These binds are detected at runtime by the compiled sandbox binary, so they work across different hardware configurations without per-sandbox configuration.
 
-### HiDPI scaling
+### Theme
 
 ```nix
-cloister.sandboxes.chromium.gui.scaleFactor = 2.0;
-```
-
-When set, `GDK_SCALE`, `GDK_DPI_SCALE`, and `QT_SCALE_FACTOR` are configured inside the sandbox so that GUI applications render at the correct size on HiDPI displays. Set this to the host's display scale (e.g. `2.0` for a 2× HiDPI display). When `null` (default), no scaling variables are set and applications use their own defaults.
-
-### GTK theme
-
-```nix
-cloister.sandboxes.dev.gui.gtk = {
-  enable = true;    # default - auto-enabled when Wayland is on
-  theme = "Adwaita"; # default
+cloister.sandboxes.dev.gui.theme = {
+  gtk = "Adwaita";
+  icon = "Adwaita";
+  qt = {
+    platform = "gtk3";
+    style = null;
+  };
 };
 ```
 
-When `gui.gtk.enable` is true, `GTK_THEME` is set inside the sandbox and `gtk3`/`gtk4` are added to the default `gui.dataPackages`, providing built-in Adwaita theme assets. GTK is auto-enabled whenever a GUI display protocol is active, but can be explicitly disabled with `gui.gtk.enable = false` (e.g., for Qt-only apps that don't need GTK).
+When GUI is enabled, cloister sets GTK and Qt theme environment inside the sandbox and writes GTK settings files. `gui.theme.gtk` sets `GTK_THEME` and `gtk-theme-name`, `gui.theme.icon` sets `gtk-icon-theme-name`, `gui.theme.qt.platform` sets `QT_QPA_PLATFORMTHEME`, and `gui.theme.qt.style` sets `QT_STYLE_OVERRIDE` when non-null.
 
-For alternative themes, add the theme package and set the name:
+For alternative themes, add the theme or icon package to `gui.packages` and set the matching theme names:
 
 ```nix
-cloister.sandboxes.myapp.gui.gtk = {
-  theme = "Adwaita:dark";
-  packages = with pkgs; [ adw-gtk3 ];  # merged into XDG_DATA_DIRS
+cloister.sandboxes.myapp.gui = {
+  theme = {
+    gtk = "Adwaita:dark";
+    icon = "Adwaita";
+  };
+  packages = with pkgs; [ adwaita-icon-theme adw-gtk3 ];
 };
 ```
 
-`GTK_THEME` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.gtk.theme` instead.
+`GTK_THEME`, `QT_QPA_PLATFORMTHEME`, `QT_STYLE_OVERRIDE`, and `QT_PLUGIN_PATH` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.theme.*` and `gui.packages` instead.
 
-### Qt theme
-
-```nix
-cloister.sandboxes.dev.gui.qt = {
-  enable = true;
-  # platformTheme = "gtk3";  # default - reads GTK_THEME, built into qtbase
-  # style = null;            # default - no QT_STYLE_OVERRIDE
-};
-```
-
-When `gui.qt.enable` is true, `QT_QPA_PLATFORMTHEME` is set inside the sandbox. The default `"gtk3"` platform theme is built into qtbase and reads `GTK_THEME`, so Qt apps follow the GTK theme automatically when `gui.gtk` is also enabled.
-
-For apps needing additional Qt plugins (e.g., `qt6ct` for fine-grained control):
+### GUI packages
 
 ```nix
-cloister.sandboxes.myapp.gui.qt = {
-  enable = true;
-  platformTheme = "qt6ct";
-  packages = with pkgs; [ qt6ct ];  # adds to QT_PLUGIN_PATH (both qt-5 and qt-6 paths)
-};
-```
-
-To force a specific Qt style (sets `QT_STYLE_OVERRIDE`):
-
-```nix
-cloister.sandboxes.myapp.gui.qt.style = "Fusion";
-```
-
-`QT_QPA_PLATFORMTHEME`, `QT_STYLE_OVERRIDE`, and `QT_PLUGIN_PATH` cannot be set directly via `sandbox.env` when Qt is enabled - use the `gui.qt.*` options instead.
-
-### Icon themes and XDG data
-
-```nix
-cloister.sandboxes.dev.gui.dataPackages = with pkgs; [ hicolor-icon-theme gtk3 gtk4 gsettings-desktop-schemas ];  # default when GTK is enabled
-```
-
-When a GUI display protocol is enabled, `XDG_DATA_DIRS` is computed from `gui.dataPackages` (plus `gui.gtk.packages`) - each package's `/share` directory is included. The defaults provide:
-
-- **`hicolor-icon-theme`** - the freedesktop fallback icon theme required by GTK and Qt (always included when GUI is enabled)
-- **`gtk3`** / **`gtk4`** - built-in Adwaita theme assets (only included when `gui.gtk.enable` is true)
-- **`gsettings-desktop-schemas`** - GSettings schemas for desktop settings (only included when `gui.gtk.enable` is true)
-
-To add additional icon themes or MIME type databases:
-
-```nix
-cloister.sandboxes.evince.gui.dataPackages = with pkgs; [
+cloister.sandboxes.dev.gui.packages = with pkgs; [
   hicolor-icon-theme
+  adwaita-icon-theme
   gtk3
   gtk4
   gsettings-desktop-schemas
-  adwaita-icon-theme
-  shared-mime-info
 ];
 ```
 
-`XDG_DATA_DIRS` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.dataPackages` instead.
+When GUI is enabled, `XDG_DATA_DIRS` is computed from `gui.packages`; each package's `/share` directory is included. Qt plugin directories from the same packages are added to `QT_PLUGIN_PATH`.
+
+The default GUI package set is:
+
+- **`hicolor-icon-theme`** - freedesktop fallback icon theme required by GTK and Qt
+- **`adwaita-icon-theme`** - default Adwaita icon theme
+- **`gtk3`** / **`gtk4`** - built-in Adwaita theme assets
+- **`gsettings-desktop-schemas`** - GSettings schemas for desktop settings
+
+To add MIME data, icon themes, GTK themes, or Qt plugins:
+
+```nix
+cloister.sandboxes.evince.gui.packages = with pkgs; [
+  hicolor-icon-theme
+  adwaita-icon-theme
+  gtk3
+  gtk4
+  gsettings-desktop-schemas
+  shared-mime-info
+  qt6ct
+];
+```
+
+`XDG_DATA_DIRS` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.packages` instead.
 
 ### Fonts
 
 ```nix
-cloister.sandboxes.dev.gui.fonts.packages = with pkgs; [ dejavu_fonts ];  # default when GUI is enabled
+cloister.sandboxes.dev.gui.fonts = with pkgs; [ noto-fonts noto-fonts-color-emoji ];
 ```
 
-When a GUI display protocol is enabled, a self-contained fontconfig configuration is generated via `pkgs.makeFontsConf` and injected into the sandbox as `FONTCONFIG_FILE`. This replaces the previous host `/etc/fonts` bind mount, making font rendering a declared sandbox property instead of a host-dependent side-effect.
+When GUI is enabled, a self-contained fontconfig configuration is generated via `pkgs.makeFontsConf` and injected into the sandbox as `FONTCONFIG_FILE`. This replaces the previous host `/etc/fonts` bind mount, making font rendering a declared sandbox property instead of a host-dependent side-effect.
 
-The default provides **`dejavu_fonts`** - a widely-compatible font family covering Latin, Greek, Cyrillic, and more. To add additional fonts:
+The default provides **`noto-fonts`** plus **`noto-fonts-color-emoji`**. To add additional fonts:
 
 ```nix
-cloister.sandboxes.myapp.gui.fonts.packages = with pkgs; [
-  dejavu_fonts
+cloister.sandboxes.myapp.gui.fonts = with pkgs; [
   noto-fonts
+  noto-fonts-color-emoji
   noto-fonts-cjk-sans
 ];
 ```
@@ -564,25 +536,24 @@ cloister.sandboxes.myapp.gui.fonts.packages = with pkgs; [
 Set to an empty list to disable the generated fontconfig entirely (e.g., if the application bundles its own fonts):
 
 ```nix
-cloister.sandboxes.myapp.gui.fonts.packages = lib.mkForce [ ];
+cloister.sandboxes.myapp.gui.fonts = lib.mkForce [ ];
 ```
 
-`FONTCONFIG_FILE` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.fonts.packages` instead.
+`FONTCONFIG_FILE` cannot be set directly via `sandbox.env` when GUI is enabled - use `gui.fonts` instead.
 
 ### Desktop entries
 
 ```nix
 cloister.sandboxes.chromium.gui.desktopEntry = {
-  enable = true;
   name = "Chromium (Sandboxed)";
   execArgs = "%U";
   icon = "chromium";
   categories = [ "Network" "WebBrowser" ];
-  mimeType = [ "text/html" "x-scheme-handler/http" "x-scheme-handler/https" ];
+  mimeTypes = [ "text/html" "x-scheme-handler/http" "x-scheme-handler/https" ];
 };
 ```
 
-Generates an XDG `.desktop` file so the sandbox appears in your app launcher. Requires a GUI display protocol to be enabled and `defaultCommand` to be set. The `Exec` line launches `cl-<name>` with any `execArgs` appended, so `defaultCommand` is what makes that wrapper behave like an application launcher instead of opening an interactive shell. When `name` is empty, it falls back to `cl-<name>`.
+Generates an XDG `.desktop` file so the sandbox appears in your app launcher. Set `gui.desktopEntry = null` to disable launcher generation. A desktop entry requires `gui.enable = true` and `defaultCommand` to be set. The `Exec` line launches `cl-<name>` with any `execArgs` appended, so `defaultCommand` is what makes that wrapper behave like an application launcher instead of opening an interactive shell. When `name` is empty, it falls back to `cl-<name>`.
 
 ### Device integrations
 
@@ -719,7 +690,7 @@ For app-specific sandboxes, `defaultCommand` specifies the command to run when t
 cloister.sandboxes.evince = {
   extraPackages = with pkgs; [ evince ];
   defaultCommand = [ "evince" ];
-  gui.wayland.enable = true;
+  gui.enable = true;
 };
 ```
 
@@ -795,26 +766,19 @@ See the sections above for usage examples and explanations.
 | `sandbox.copyFiles` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into the sandbox state; missing sources fail startup |
 | `sandbox.anonymize.enable` | bool | `false` | Present generic identity (username/hostname `ubuntu`, synthetic `/proc` files, blocked `/proc/sys`) |
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
-| `gui.wayland.enable` | bool | `false` | Forward Wayland display socket |
-| `gui.wayland.securityContext.enable` | bool | `true` | Require wp-security-context-v1 for Wayland |
-| `gui.gpu.enable` | bool | `false`\* | Bind /dev/dri for GPU acceleration (*auto-enabled with Wayland) |
-| `gui.gpu.shm` | bool | `true` | Mount a private tmpfs at /dev/shm when GPU is enabled (does not expose host shared memory) |
-| `gui.scaleFactor` | nullOr float | `null` | Display scale factor for HiDPI (sets `GDK_SCALE`, `GDK_DPI_SCALE`, `QT_SCALE_FACTOR`) |
-| `gui.dataPackages` | list of package | `[hicolor-icon-theme]`* | Packages whose `/share` dirs form `XDG_DATA_DIRS` (*`gtk3`/`gtk4`/`gsettings-desktop-schemas` added when `gui.gtk.enable`) |
-| `gui.fonts.packages` | list of package | `[]`* | Font packages for fontconfig (*`dejavu_fonts` added when Wayland enabled) |
-| `gui.gtk.enable` | bool | `false`* | Enable GTK theming (*auto-enabled with Wayland) |
-| `gui.gtk.theme` | str | `"Adwaita"` | GTK theme name (sets `GTK_THEME` env var) |
-| `gui.gtk.packages` | list of package | `[]` | Additional GTK theme packages merged into `XDG_DATA_DIRS` |
-| `gui.qt.enable` | bool | `false` | Enable Qt theming (`QT_QPA_PLATFORMTHEME`, etc.) |
-| `gui.qt.platformTheme` | str | `"gtk3"` | Qt platform theme plugin (sets `QT_QPA_PLATFORMTHEME`) |
-| `gui.qt.style` | nullOr str | `null` | Qt style override (sets `QT_STYLE_OVERRIDE` when non-null) |
-| `gui.qt.packages` | list of package | `[]` | Qt plugin packages (added to `QT_PLUGIN_PATH`) |
-| `gui.desktopEntry.enable` | bool | `false` | Generate XDG .desktop file for app launchers |
+| `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |
+| `gui.fonts` | list of package | `[]`\* | Font packages for fontconfig (*`noto-fonts` and `noto-fonts-color-emoji` added when GUI enabled) |
+| `gui.packages` | list of package | `[]`* | GUI asset/plugin packages for `XDG_DATA_DIRS` and `QT_PLUGIN_PATH` (*Adwaita defaults added when GUI enabled) |
+| `gui.theme.gtk` | str | `"Adwaita"` | GTK theme name (sets `GTK_THEME` env var and GTK settings) |
+| `gui.theme.icon` | str | `"Adwaita"` | Icon theme name for GTK settings |
+| `gui.theme.qt.platform` | str | `"gtk3"` | Qt platform theme plugin (sets `QT_QPA_PLATFORMTHEME`) |
+| `gui.theme.qt.style` | nullOr str | `null` | Qt style override (sets `QT_STYLE_OVERRIDE` when non-null) |
+| `gui.desktopEntry` | nullOr submodule | `null` | Generate XDG .desktop file for app launchers when set |
 | `gui.desktopEntry.name` | str | `""` | Display name (falls back to `cl-<name>`) |
 | `gui.desktopEntry.execArgs` | str | `""` | Extra arguments appended after the sandbox binary path (e.g. `%U`) |
 | `gui.desktopEntry.icon` | str | `""` | Icon name or path |
 | `gui.desktopEntry.categories` | list of str | `[]` | XDG categories |
-| `gui.desktopEntry.mimeType` | list of str | `[]` | MIME types handled |
+| `gui.desktopEntry.mimeTypes` | list of str | `[]` | MIME types handled |
 | `gui.desktopEntry.terminal` | bool | `false` | Run in terminal |
 | `gui.desktopEntry.genericName` | str | `""` | Generic name (e.g. "Web Browser") |
 | `gui.desktopEntry.comment` | str | `""` | Tooltip/comment |

@@ -36,13 +36,7 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub network_namespace: Option<String>,
     #[serde(default)]
-    pub wayland_enable: bool,
-    #[serde(default)]
-    pub wayland_security_context: bool,
-    #[serde(default)]
-    pub gpu_enable: bool,
-    #[serde(default)]
-    pub gpu_shm: bool,
+    pub gui_enable: bool,
     #[serde(default)]
     pub ssh_enable: bool,
     #[serde(default)]
@@ -397,7 +391,7 @@ mod tests {
         assert_eq!(config.shell_interactive_args, vec!["-i"]);
         assert_eq!(config.wrapped_command_shell_args, vec!["-i"]);
         assert!(!config.network_enable);
-        assert!(!config.wayland_enable);
+        assert!(!config.gui_enable);
         assert!(config.pipewire_backend_socket_name.is_none());
         assert!(config.pipewire_pulse_binary_path.is_none());
         assert!(config.pipewire_pulse_config_path.is_none());
@@ -422,8 +416,7 @@ mod tests {
             "shell_name": "zsh",
             "shell_host_config": false,
             "network_enable": true,
-            "wayland_enable": true,
-            "wayland_security_context": true,
+            "gui_enable": true,
             "ssh_enable": true,
             "ssh_allow_fingerprints": ["SHA256:abc", "SHA256:def"],
             "ssh_filter_timeout_seconds": 30,
@@ -458,8 +451,7 @@ mod tests {
         let config: SandboxConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.name, "dev");
         assert!(config.network_enable);
-        assert!(config.wayland_enable);
-        assert!(config.wayland_security_context);
+        assert!(config.gui_enable);
         assert!(config.ssh_filter_enabled());
         assert_eq!(
             config.pipewire_backend_socket_name.as_deref(),

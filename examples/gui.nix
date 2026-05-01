@@ -12,11 +12,10 @@
     defaultCommand = [ "evince" ];
 
     gui.desktopEntry = {
-      enable = true;
       name = "Evince (Sandboxed)";
       icon = "org.gnome.Evince";
       categories = [ "Office" ];
-      mimeType = [ "application/pdf" ];
+      mimeTypes = [ "application/pdf" ];
     };
 
     registry.commands = [ "evince" ];

@@ -10,7 +10,6 @@
   shellLib,
   anonymize,
   sandboxHome,
-  gpuEnabled,
   seccompFilter,
   allDirs,
   managedFileDirsOverlapping,
@@ -310,8 +309,8 @@ let
       sCfg._basePackages
       ++ sCfg.extraPackages
       ++ [ pkgs.tini ]
-      ++ lib.optional gpuEnabled pkgs.mesa
-      ++ lib.optionals gpuEnabled hostGpuStoreInputs
+      ++ lib.optional sCfg.gui.enable pkgs.mesa
+      ++ lib.optionals sCfg.gui.enable hostGpuStoreInputs
       ++ lib.optional sCfg.audio.pipewire.pulseOnly pkgs.pipewire
       ++ lib.optional (pipewirePulseOnlyConf != null) pipewirePulseOnlyConf
       ++ map storeRootFromEntry symlinkTargets
@@ -335,10 +334,7 @@ let
 
       network_enable = sCfg.network.enable;
       network_namespace = sCfg.network.namespace;
-      wayland_enable = sCfg.gui.wayland.enable;
-      wayland_security_context = sCfg.gui.wayland.securityContext.enable;
-      gpu_enable = gpuEnabled;
-      gpu_shm = sCfg.gui.gpu.shm;
+      gui_enable = sCfg.gui.enable;
       ssh_enable = sCfg.ssh.enable;
       pipewire_backend_socket_name = pipewireBackendSocketName;
       pipewire_socket_name = pipewireSocketName;

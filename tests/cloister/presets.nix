@@ -16,7 +16,7 @@ let
         dev.preset = "developer";
         gui = {
           preset = "gui";
-          gui.wayland.enable = false;
+          gui.enable = false;
         };
         chromium.preset = "chromium";
       };
@@ -40,7 +40,7 @@ let
           preset = "gui";
           dbus.enable = false;
           dbus.notifications = false;
-          gui.wayland.enable = false;
+          gui.enable = false;
         };
         chromium = {
           preset = "chromium";
@@ -71,7 +71,7 @@ checks.mkCheck "test-cloister-presets" [
   (checks.expectTrue "developer enables git" sandboxes.dev.git.enable)
   (checks.expectTrue "developer enables notifications default" sandboxes.dev.dbus.notifications)
   (checks.expectTrue "developer enables ssh" sandboxes.dev.ssh.enable)
-  (checks.expectFalse "gui override beats preset default" sandboxes.gui.gui.wayland.enable)
+  (checks.expectFalse "gui override beats preset default" sandboxes.gui.gui.enable)
   (checks.expectTrue "gui preset enables dbus" sandboxes.gui.dbus.enable)
   (checks.expectTrue "gui preset enables notifications" sandboxes.gui.dbus.notifications)
   (checks.expectTrue "chromium enables pulseOnly" sandboxes.chromium.audio.pipewire.pulseOnly)
@@ -81,7 +81,7 @@ checks.mkCheck "test-cloister-presets" [
   (checks.expectFalse "developer override can disable git" overrideSandboxes.dev.git.enable)
   (checks.expectFalse "developer override can disable notifications" overrideSandboxes.dev.dbus.notifications)
   (checks.expectFalse "gui override can disable dbus" overrideSandboxes.gui.dbus.enable)
-  (checks.expectFalse "gui override can disable wayland" overrideSandboxes.gui.gui.wayland.enable)
+  (checks.expectFalse "gui override can disable gui" overrideSandboxes.gui.gui.enable)
   (checks.expectFalse "chromium override can disable pulseOnly" overrideSandboxes.chromium.audio.pipewire.pulseOnly)
   (checks.expectFalse "chromium override can disable chromium seccomp mode" overrideSandboxes.chromium.sandbox.seccomp.allowChromiumSandbox)
   (checks.expectFalse "plain sandbox keeps dbus disabled" plainSandbox.dbus.enable)
