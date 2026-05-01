@@ -33,6 +33,9 @@ RUST_TEST_HELPERS ?= $(RUST_HELPER_WORKSPACES)
 RUST_AUDIT_WORKSPACES ?= $(RUST_HELPER_WORKSPACES)
 BASE_REF ?= main
 TEST_CHANGED_FILES ?=
+# Keep test invocations from consulting project or global Cachix substituters.
+# Override NIX_TEST_FLAGS if you intentionally want different Nix test settings.
+NIX_TEST_FLAGS ?= --option substituters https://cache.nixos.org/ --option extra-substituters ""
 
 # Apply treefmt fixes, then verify the treefmt check is clean
 fmt:
@@ -56,7 +59,7 @@ clippy:
 
 # Rust helper tests (inside the dev shell for system dependencies)
 rust-test:
-	nix develop -c sh -eu -c 'for dir in "$$@"; do printf "Running Rust tests in %s\n" "$$dir"; (cd "$$dir" && cargo test); done' sh $(RUST_TEST_HELPERS)
+	nix develop $(NIX_TEST_FLAGS) -c sh -eu -c 'for dir in "$$@"; do printf "Running Rust tests in %s\n" "$$dir"; (cd "$$dir" && cargo test); done' sh $(RUST_TEST_HELPERS)
 
 # Audit Rust helper dependencies against the RustSec advisory DB
 cargo-audit:
@@ -64,15 +67,15 @@ cargo-audit:
 
 # Full test suite; Nix can build eval and runtime checks concurrently in one invocation
 test:
-	nix build --print-build-logs $(ALL_TEST_TARGETS)
+	nix build $(NIX_TEST_FLAGS) --print-build-logs $(ALL_TEST_TARGETS)
 
 # Eval tests only
 test-eval:
-	nix build --print-build-logs $(TEST_TARGETS)
+	nix build $(NIX_TEST_FLAGS) --print-build-logs $(TEST_TARGETS)
 
 # Runtime VM tests; kept separate from the fast eval-only loop
 test-runtime:
-	nix build --print-build-logs $(RUNTIME_TEST_TARGETS)
+	nix build $(NIX_TEST_FLAGS) --print-build-logs $(RUNTIME_TEST_TARGETS)
 
 # Run only checks matching changed files; override TEST_CHANGED_FILES for ad hoc selection
 test-changed:

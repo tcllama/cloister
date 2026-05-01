@@ -556,6 +556,32 @@ let
         }
       ) sCfg.sandbox.copies;
 
+      symlinkHome = if anonymize then sandboxHome else config.home.homeDirectory;
+      normalizeSymlinkPath =
+        path:
+        if path == "$HOME" then
+          symlinkHome
+        else if lib.hasPrefix "$HOME/" path then
+          "${symlinkHome}/${lib.removePrefix "$HOME/" path}"
+        else if lib.hasPrefix "/" path then
+          path
+        else
+          "${symlinkHome}/${path}";
+
+      normalizeSymlinkTarget =
+        target:
+        if target == "$HOME" then
+          symlinkHome
+        else if lib.hasPrefix "$HOME/" target then
+          "${symlinkHome}/${lib.removePrefix "$HOME/" target}"
+        else
+          target;
+
+      userSymlinks = map (entry: {
+        target = normalizeSymlinkTarget entry.target;
+        link = normalizeSymlinkPath entry.link;
+      }) sCfg.sandbox.symlinks;
+
       resolvedExtraRo = userRoBinds;
       resolvedExtraRw = userRwBinds ++ dirBinds ++ fileBinds ++ perDirBinds ++ copyFileBinds;
 
@@ -810,13 +836,26 @@ let
       duplicateDests = findDuplicates allDests;
 
       # --- Overlapping dirs and tmpfs detection ---
-      allDirs = internalDirs ++ managedFileDirsNonOverlapping;
+      userSymlinkDirs = lib.unique (
+        builtins.filter (dir: dir != "/") (map (entry: builtins.dirOf entry.link) userSymlinks)
+      );
+      allDirs = internalDirs ++ managedFileDirsNonOverlapping ++ userSymlinkDirs;
       dirTmpfsOverlap = lib.intersectLists allDirs internalTmpfs;
 
       # --- Duplicate symlink link paths ---
-      allSymlinks = internalSymlinks;
-      allSymlinkLinks = map (s: s.link) allSymlinks;
+      allSymlinks = internalSymlinks ++ userSymlinks;
+      allSymlinkLinks = map (s: normalizeDest s.link) allSymlinks;
+      userSymlinkLinks = map (s: normalizeDest s.link) userSymlinks;
       duplicateLinks = findDuplicates allSymlinkLinks;
+
+      # User symlinks are emitted before binds, so links that collide with or sit
+      # underneath a bind destination would either be hidden by the later mount or
+      # risk changing what the bind operation targets.
+      userSymlinkBindConflicts = lib.unique (
+        builtins.filter (
+          link: builtins.any (dest: link == dest || (dest != "/" && lib.hasPrefix "${dest}/" link)) allDests
+        ) userSymlinkLinks
+      );
 
       # --- Duplicate managed file destinations ---
       duplicateManagedFiles = findDuplicates (map (bind: bind.dest) managedFileBinds);
@@ -860,12 +899,27 @@ let
           workerBrokerPaths = lib.concatMap (
             mount: [ mount.path ] ++ lib.optional (mount.subPath != null) mount.subPath
           ) workerBrokerDelegatedMounts;
+          unsafeSymlinkPaths = lib.concatMap (
+            entry:
+            builtins.filter
+              (
+                path:
+                lib.hasInfix "\n" path
+                || lib.hasInfix "\r" path
+                || (lib.hasInfix "$" path && path != "$HOME" && !lib.hasPrefix "$HOME/" path)
+              )
+              [
+                entry.target
+                entry.link
+              ]
+          ) sCfg.sandbox.symlinks;
         in
         bindPaths
         ++ statePaths
         ++ managedPaths
         ++ copySrcPaths
         ++ unsafeCopyDestPaths
+        ++ unsafeSymlinkPaths
         ++ workerBrokerKeyPaths
         ++ workerBrokerPaths
         ++ lib.attrNames sCfg.sandbox.env
@@ -914,6 +968,7 @@ let
           duplicateDests
           dirTmpfsOverlap
           duplicateLinks
+          userSymlinkBindConflicts
           duplicateManagedFiles
           unsafePaths
           overriddenEnvKeys

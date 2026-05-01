@@ -6,6 +6,7 @@
   duplicateDests,
   dirTmpfsOverlap,
   duplicateLinks,
+  userSymlinkBindConflicts,
   duplicateManagedFiles,
   unsafePaths,
   overriddenEnvKeys,
@@ -58,6 +59,17 @@ let
   invalidCopySources = builtins.filter (
     cf: !isAbsoluteTraversalFreeHostPath cf.src
   ) sCfg.sandbox.copies;
+  isSafeSymlinkLink =
+    path:
+    if lib.hasPrefix "$HOME/" path then
+      normalizeCopyDest path == path
+    else if lib.hasPrefix "/" path then
+      isAbsoluteTraversalFreeHostPath path
+    else
+      isRelativeDescendantPath path;
+  invalidSymlinks = builtins.filter (
+    entry: entry.target == "" || !isSafeSymlinkLink entry.link
+  ) sCfg.sandbox.symlinks;
   workerBrokerEnabled = workerBrokerCfg.profiles != { };
   profileDelegatedMounts = lib.concatMapAttrs (
     profileName: profile:
@@ -176,6 +188,10 @@ in
     }
   )
   {
+    assertion = invalidSymlinks == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.symlinks entries must have non-empty targets and traversal-free link paths: ${builtins.toJSON invalidSymlinks}";
+  }
+  {
     assertion = duplicateDests == [ ];
     message = "cloister.sandboxes.${name}: duplicate bind mount destinations: ${lib.concatStringsSep ", " duplicateDests}";
   }
@@ -186,6 +202,10 @@ in
   {
     assertion = duplicateLinks == [ ];
     message = "cloister.sandboxes.${name}: duplicate symlink destinations: ${lib.concatStringsSep ", " duplicateLinks}";
+  }
+  {
+    assertion = userSymlinkBindConflicts == [ ];
+    message = "cloister.sandboxes.${name}: sandbox.symlinks link paths must not collide with or be hidden by bind mount destinations: ${lib.concatStringsSep ", " userSymlinkBindConflicts}";
   }
   {
     assertion = duplicateManagedFiles == [ ];

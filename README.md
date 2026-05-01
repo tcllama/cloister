@@ -289,6 +289,7 @@ All options in this table are set under `cloister.sandboxes.<name>`, for example
 | `sandbox.copies` | `[ ]` | Copy host files into writable sandbox state without mutating the host originals. |
 | `sandbox.env` | `{ }` | Set fixed environment variables inside the sandbox. |
 | `sandbox.readOnly` / `readWrite` / `managed` / `state.*` | empty | Expose host paths, managed config, and persistent or per-project state explicitly. |
+| `sandbox.symlinks` | `[ ]` | Create symlinks inside the sandbox, with relative links resolved under the sandbox home. |
 | `sandbox.nixStore.mode` | `"host"` | Use the host `/nix/store` or an immutable `"image-store"` mount. |
 | `sandbox.passthroughEnv` | locale vars | Pass selected host environment variables through when set. |
 | `sandbox.seccomp.*` | enabled | Tune syscall filtering, including Chromium/Electron compatibility. |

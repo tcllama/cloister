@@ -370,6 +370,30 @@ in
 
 These binds are read-only and overlay correctly on top of `state.dirs` and `state.projectDirs` mounts.
 
+### Sandbox symlinks
+
+Use `sandbox.symlinks` to create symlinks inside the sandbox. Relative `link` paths are resolved under the sandbox home; `target` is the symlink contents and may be relative to the link's parent or absolute inside the sandbox.
+
+```nix
+cloister.sandboxes.dev.sandbox = {
+  managed = [
+    {
+      src = config.home.file.".ssh/config".source;
+      dest = ".ssh/.config";
+    }
+  ];
+
+  symlinks = [
+    {
+      target = ".config";
+      link = ".ssh/config";
+    }
+  ];
+};
+```
+
+This is useful when a program cares whether a sandbox path is a symlink. For example, OpenSSH accepts a user-owned `~/.ssh/config` symlink to an immutable store file on the host, but rejects a root-owned store file bound directly at `~/.ssh/config`.
+
 ### Disabling working directory binding
 
 App-specific sandboxes (like Discord or Chromium) don't need access to the host directory they're launched from. Disable the working directory bind for tighter isolation:
@@ -754,6 +778,7 @@ See the sections above for usage examples and explanations.
 | `sandbox.disallowedPaths` | list of str | `["/", "/root"]` | Paths disallowed as sandbox directory |
 | `sandbox.copyBase` | str | `${config.xdg.stateHome}/cloister` | Host base directory where `sandbox.copies` writable state is stored |
 | `sandbox.copies` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into sandbox state; `src` is a literal absolute host path and `dest` resolves under `$HOME` |
+| `sandbox.symlinks` | list of {target, link} | `[]` | Symlinks to create inside the sandbox; relative `link` paths resolve under `$HOME` |
 | `sandbox.anonymize.enable` | bool | `false` | Present generic identity (username/hostname `ubuntu`, synthetic `/proc` files, blocked `/proc/sys`) |
 | `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
 | `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |

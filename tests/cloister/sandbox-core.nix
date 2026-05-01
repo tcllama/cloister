@@ -114,6 +114,26 @@ let
     };
   };
 
+  symlinkEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox = {
+        managed = [
+          {
+            src = managedXdgSource;
+            dest = ".ssh/.config";
+          }
+        ];
+        symlinks = [
+          {
+            target = ".config";
+            link = ".ssh/config";
+          }
+        ];
+      };
+    };
+  };
+
   managedPrefixEval = hm {
     xdg.configFile."app/exact".source = managedXdgSource;
     xdg.configFile."app/prefix/alpha.toml".source = managedXdgSource;
@@ -292,6 +312,81 @@ let
     };
   };
 
+  invalidSymlink = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.symlinks = [
+        {
+          target = ".config";
+          link = "../config";
+        }
+      ];
+    };
+  };
+
+  duplicateSymlinkDest = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.symlinks = [
+        {
+          target = "one";
+          link = ".config/shared";
+        }
+        {
+          target = "two";
+          link = ".config/shared";
+        }
+      ];
+    };
+  };
+
+  symlinkInternalBindCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox.symlinks = [
+        {
+          target = "/tmp/hosts";
+          link = "/etc/hosts";
+        }
+      ];
+    };
+  };
+
+  symlinkUserBindCollision = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox = {
+        readOnly = [
+          {
+            src = "/host/app.conf";
+            dest = ".config/app.conf";
+          }
+        ];
+        symlinks = [
+          {
+            target = "app.conf.real";
+            link = ".config/app.conf";
+          }
+        ];
+      };
+    };
+  };
+
+  symlinkHiddenByBind = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.sandbox = {
+        readWrite = [ ".ssh" ];
+        symlinks = [
+          {
+            target = "config.real";
+            link = ".ssh/config";
+          }
+        ];
+      };
+    };
+  };
+
   pathOverride = hm {
     cloister = {
       enable = true;
@@ -376,6 +471,7 @@ let
   explicitManagedFileBindState =
     explicitManagedFileBindEval.config.cloister._internal.sandboxConfigs.dev;
   explicitManagedFileBindStateJson = builtins.toJSON explicitManagedFileBindState;
+  symlinkStaticArgs = builtins.toJSON symlinkEval.config.cloister._internal.sandboxConfigs.dev.static_bwrap_args;
   managedPrefixConfig = managedPrefixEval.config.cloister._internal.sandboxConfigs.dev;
   managedPrefixStaticArgs = builtins.toJSON managedPrefixConfig.static_bwrap_args;
   managedExactWinsConfig = managedExactWinsEval.config.cloister._internal.sandboxConfigs.dev;
@@ -481,6 +577,13 @@ checks.mkCheck "test-cloister-sandbox-core" [
     (builtins.unsafeDiscardStringContext (toString managedXdgSource))
     explicitManagedFileBindStateJson
   )
+  (checks.expectContains "sandbox symlink renders target" ''".config"'' symlinkStaticArgs)
+  (checks.expectContains "sandbox symlink renders home-relative link" ''"/home/tester/.ssh/config"''
+    symlinkStaticArgs
+  )
+  (checks.expectContains "sandbox symlink creates parent directory" ''"/home/tester/.ssh"''
+    symlinkStaticArgs
+  )
   (checks.expectEq "multi per-dir mapping is rendered" {
     "/var/lib/cloister-per-dir" = [ ".cache/custom" ];
     "/var/lib/cloister-worktrees" = [ ".local/worktrees/project" ];
@@ -550,6 +653,26 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectAssertionMessage "duplicate explicit managed file destinations are rejected"
     duplicateManagedFileBindDest.assertions
     "duplicate managed file destinations"
+  )
+  (checks.expectAssertionMessage "invalid sandbox symlink paths are rejected"
+    invalidSymlink.assertions
+    "sandbox.symlinks entries must have non-empty targets"
+  )
+  (checks.expectAssertionMessage "duplicate sandbox symlink destinations are rejected"
+    duplicateSymlinkDest.assertions
+    "duplicate symlink destinations"
+  )
+  (checks.expectAssertionMessage "sandbox symlink cannot collide with internal bind destination"
+    symlinkInternalBindCollision.assertions
+    "sandbox.symlinks link paths must not collide with or be hidden by bind mount destinations"
+  )
+  (checks.expectAssertionMessage "sandbox symlink cannot collide with user bind destination"
+    symlinkUserBindCollision.assertions
+    "sandbox.symlinks link paths must not collide with or be hidden by bind mount destinations"
+  )
+  (checks.expectAssertionMessage "sandbox symlink cannot be hidden by containing bind destination"
+    symlinkHiddenByBind.assertions
+    "sandbox.symlinks link paths must not collide with or be hidden by bind mount destinations"
   )
   (checks.expectAssertionMessage "PATH override is rejected" pathOverride.assertions
     "computed and cannot be overridden"

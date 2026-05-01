@@ -78,6 +78,19 @@ let
     };
   };
 
+  symlinkEntryType = lib.types.submodule {
+    options = {
+      target = lib.mkOption {
+        type = lib.types.str;
+        description = "Symlink target. May be relative to the link's parent or absolute inside the sandbox.";
+      };
+      link = lib.mkOption {
+        type = lib.types.str;
+        description = "Symlink path inside the sandbox. Relative paths are resolved under the sandbox home.";
+      };
+    };
+  };
+
   dbusPolicySubmodule = {
     options = {
       talk = lib.mkOption {
@@ -595,6 +608,12 @@ let
             type = lib.types.listOf copyEntryType;
             default = [ ];
             description = "Files to copy into writable sandbox state before binding into the sandbox.";
+          };
+
+          symlinks = lib.mkOption {
+            type = lib.types.listOf symlinkEntryType;
+            default = [ ];
+            description = "Symlinks to create inside the sandbox. Relative link paths are resolved under the sandbox home.";
           };
 
           devices = lib.mkOption {
