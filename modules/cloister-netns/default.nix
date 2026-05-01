@@ -51,17 +51,10 @@ let
         in
         !(isIpv4Address host || isBareIpv6Address host);
 
-  wireguardNeedsNetworkOnline =
-    netCfg:
-    if builtins.isBool cfg.startup.waitForNetworkOnline then
-      cfg.startup.waitForNetworkOnline
-    else
-      builtins.any endpointNeedsNetworkOnline netCfg.wireguard.peers;
+  wireguardNeedsNetworkOnline = netCfg: builtins.any endpointNeedsNetworkOnline netCfg.peers;
 
-  cloister-sandbox = pkgs.callPackage ../../helpers/cloister-sandbox { };
   cloister-netns = pkgs.callPackage ../../helpers/cloister-netns {
     allowedNamespaces = effectiveAllowedNamespaces;
-    inherit (cfg) enforceExecAllowlist allowedExecPaths;
     requiredGroup = cfg.group;
   };
 
@@ -102,83 +95,62 @@ let
     };
   };
 
-  wireguardSubmodule = {
+  allPortRange = {
+    from = 1;
+    to = 65535;
+  };
+
+  defaultLanAllowedRanges = [
+    "10.0.0.0/8"
+    "172.16.0.0/12"
+    "192.168.0.0/16"
+  ];
+
+  networkSubmodule = {
     options = {
+      type = lib.mkOption {
+        type = lib.types.enum [
+          "wireguard"
+          "localhost"
+          "lan"
+          "isolated"
+        ];
+        description = "Network namespace type.";
+      };
       privateKeyFile = lib.mkOption {
-        type = lib.types.path;
-        description = "Path to the WireGuard private key file.";
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "Path to the WireGuard private key file. Required when type is `wireguard`.";
       };
       address = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
-        description = ''Addresses to assign to the WireGuard interface in CIDR notation (e.g. ["10.0.0.2/32"]). Mutually exclusive with addressFile.'';
+        description = ''Addresses to assign to a WireGuard interface in CIDR notation (e.g. ["10.0.0.2/32"]). Mutually exclusive with addressFile.'';
       };
       addressFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
-        description = "Path to a file containing the WireGuard address in CIDR notation. Mutually exclusive with address.";
+        description = "Path to a file containing a WireGuard address in CIDR notation. Mutually exclusive with address.";
       };
       peers = lib.mkOption {
         type = lib.types.listOf (lib.types.submodule peerSubmodule);
+        default = [ ];
         description = "WireGuard peer configurations.";
       };
       mtu = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
         default = null;
-        description = "Optional MTU for the WireGuard interface.";
+        description = "Optional WireGuard interface MTU.";
       };
-    };
-  };
-
-  localhostSubmodule = {
-    options = {
       allowedPorts = lib.mkOption {
-        type = lib.types.listOf lib.types.port;
-        default = [
-          8000
-          8080
-          8443
-        ];
-        description = "Host ports accessible from the namespace via DNAT.";
+        type = lib.types.nullOr (lib.types.listOf lib.types.port);
+        default = null;
+        description = "Host ports accessible from a localhost namespace via DNAT. Null allows all ports when type is `localhost`.";
       };
-    };
-  };
-
-  lanSubmodule = {
-    options = {
       allowedRanges = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [
-          "10.0.0.0/8"
-          "172.16.0.0/12"
-          "192.168.0.0/16"
-        ];
-        description = "CIDR ranges the namespace is allowed to reach (forwarded through nftables).";
-      };
-    };
-  };
-
-  networkSubmodule = {
-    options = {
-      wireguard = lib.mkOption {
-        type = lib.types.nullOr (lib.types.submodule wireguardSubmodule);
+        type = lib.types.nullOr (lib.types.listOf lib.types.str);
         default = null;
-        description = "WireGuard tunnel configuration for this namespace.";
-      };
-      localhost = lib.mkOption {
-        type = lib.types.nullOr (lib.types.submodule localhostSubmodule);
-        default = null;
-        description = "Localhost-only veth + DNAT configuration for this namespace.";
-      };
-      lan = lib.mkOption {
-        type = lib.types.nullOr (lib.types.submodule lanSubmodule);
-        default = null;
-        description = "LAN-access veth configuration for this namespace (forward to allowed ranges only).";
-      };
-      isolated = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "Fully isolated namespace with loopback only (no network connectivity).";
+        description = "CIDR ranges a LAN namespace is allowed to reach. Defaults to RFC1918 ranges when type is `lan`.";
       };
       dns = lib.mkOption {
         type = lib.types.submodule {
@@ -350,7 +322,7 @@ let
   mkWireguardService =
     name: netCfg:
     let
-      wg = netCfg.wireguard;
+      wg = netCfg;
       ifName = "wg-${name}";
       escapedName = lib.escapeShellArg name;
       escapedIfName = lib.escapeShellArg ifName;
@@ -517,37 +489,43 @@ let
   mkLocalhostService =
     name: netCfg:
     let
-      inherit (netCfg) localhost;
+      inherit (netCfg) allowedPorts hostAddress namespaceAddress;
       vethHost = "veth-${name}";
-      portList = lib.concatMapStringsSep ", " toString localhost.allowedPorts;
+      allowsAllPorts = allowedPorts == null;
+      portList = lib.optionalString (!allowsAllPorts) (
+        lib.concatMapStringsSep ", " toString allowedPorts
+      );
+      dportMatch = lib.optionalString (!allowsAllPorts) " dport { ${portList} }";
     in
     mkVethService {
-      inherit name netCfg;
+      inherit
+        name
+        netCfg
+        hostAddress
+        namespaceAddress
+        ;
       typeName = "localhost";
-      inherit (localhost) hostAddress namespaceAddress;
       sysctlKey = "route_localnet";
-      hostInternalIp = builtins.head (lib.splitString "/" localhost.hostAddress);
+      hostInternalIp = builtins.head (lib.splitString "/" hostAddress);
       nftRules = ''
         table ip cloister-netns-${name} {
           chain prerouting {
             type nat hook prerouting priority dstnat; policy accept;
-            iifname "${vethHost}" tcp dport { ${portList} } dnat to 127.0.0.1
-           iifname "${vethHost}" udp dport { ${portList} } dnat to 127.0.0.1
+            iifname "${vethHost}" tcp${dportMatch} dnat to 127.0.0.1
+           iifname "${vethHost}" udp${dportMatch} dnat to 127.0.0.1
          }
          chain forward {
            type filter hook forward priority filter; policy accept;
            iifname "${vethHost}" ct state established,related accept
-           iifname "${vethHost}" tcp dport { ${portList} } accept
-           iifname "${vethHost}" udp dport { ${portList} } accept
+           iifname "${vethHost}" tcp${dportMatch} accept
+           iifname "${vethHost}" udp${dportMatch} accept
            iifname "${vethHost}" drop
          }
          chain input {
            type filter hook input priority filter; policy accept;
            iifname "${vethHost}" ct state established,related accept
-           ${lib.optionalString cfg.firewall.autoOpenLocalhostPorts ''
-             iifname "${vethHost}" tcp dport { ${portList} } accept
-             iifname "${vethHost}" udp dport { ${portList} } accept
-           ''}
+           iifname "${vethHost}" tcp${dportMatch} accept
+           iifname "${vethHost}" udp${dportMatch} accept
             iifname "${vethHost}" drop
           }
         }
@@ -568,14 +546,20 @@ let
   mkLanService =
     name: netCfg:
     let
-      inherit (netCfg) lan;
+      inherit (netCfg) hostAddress namespaceAddress;
+      allowedRanges =
+        if netCfg.allowedRanges == null then defaultLanAllowedRanges else netCfg.allowedRanges;
       vethHost = "veth-${name}";
-      rangeList = lib.concatStringsSep ", " lan.allowedRanges;
+      rangeList = lib.concatStringsSep ", " allowedRanges;
     in
     mkVethService {
-      inherit name netCfg;
+      inherit
+        name
+        netCfg
+        hostAddress
+        namespaceAddress
+        ;
       typeName = "LAN";
-      inherit (lan) hostAddress namespaceAddress;
       sysctlKey = "forwarding";
       nftRules = ''
         table ip cloister-netns-${name} {
@@ -593,7 +577,7 @@ let
          }
          chain postrouting {
            type nat hook postrouting priority srcnat; policy accept;
-            oifname != "${vethHost}" ip saddr ${lan.namespaceAddress} masquerade
+            oifname != "${vethHost}" ip saddr ${namespaceAddress} masquerade
           }
         }
         table ip6 cloister-netns-${name} {
@@ -639,30 +623,27 @@ let
 
   # ── Partition networks by type ────────────────────────────────────────
 
-  wireguardNets = lib.filterAttrs (_: net: net.wireguard != null) cfg.networks;
-  localhostNets = lib.filterAttrs (_: net: net.localhost != null) cfg.networks;
-  lanNets = lib.filterAttrs (_: net: net.lan != null) cfg.networks;
-  isolatedNets = lib.filterAttrs (_: net: net.isolated) cfg.networks;
+  wireguardNets = lib.filterAttrs (
+    _: net: net.type == "wireguard" && net.privateKeyFile != null
+  ) cfg.networks;
+  localhostNets = lib.filterAttrs (_: net: net.type == "localhost") cfg.networks;
+  lanNets = lib.filterAttrs (_: net: net.type == "lan") cfg.networks;
+  isolatedNets = lib.filterAttrs (_: net: net.type == "isolated") cfg.networks;
 
-  localhostNames = lib.sort builtins.lessThan (lib.attrNames localhostNets);
-  lanNames = lib.sort builtins.lessThan (lib.attrNames lanNets);
+  vethNames = lib.sort builtins.lessThan (lib.attrNames (localhostNets // lanNets));
 
-  localhostPool = parsePool cfg.addressPools.localhost;
-  lanPool = parsePool cfg.addressPools.lan;
+  vethPool = parsePool cfg.veth.addressPool;
 
-  effectiveLocalhostAddressPairs = builtins.listToAttrs (
-    lib.imap0 (idx: name: {
-      inherit name;
-      value = pairForIndex localhostPool idx;
-    }) localhostNames
-  );
-
-  effectiveLanAddressPairs = builtins.listToAttrs (
-    lib.imap0 (idx: name: {
-      inherit name;
-      value = pairForIndex lanPool idx;
-    }) lanNames
-  );
+  effectiveVethAddressPairs =
+    if vethPool == null then
+      { }
+    else
+      builtins.listToAttrs (
+        lib.imap0 (idx: name: {
+          inherit name;
+          value = pairForIndex vethPool idx;
+        }) vethNames
+      );
 
   wireguardServices = lib.mapAttrs' (
     name: net: lib.nameValuePair "cloister-netns-${name}" (mkWireguardService name net)
@@ -671,24 +652,14 @@ let
   localhostServices = lib.mapAttrs' (
     name: net:
     lib.nameValuePair "cloister-netns-${name}" (
-      mkLocalhostService name (
-        net
-        // {
-          localhost = net.localhost // effectiveLocalhostAddressPairs.${name};
-        }
-      )
+      mkLocalhostService name (net // effectiveVethAddressPairs.${name})
     )
   ) localhostNets;
 
   lanServices = lib.mapAttrs' (
     name: net:
     lib.nameValuePair "cloister-netns-${name}" (
-      mkLanService name (
-        net
-        // {
-          lan = net.lan // effectiveLanAddressPairs.${name};
-        }
-      )
+      mkLanService name (net // effectiveVethAddressPairs.${name})
     )
   ) lanNets;
 
@@ -698,10 +669,18 @@ let
 
   localhostFirewallInterfaces = lib.mapAttrs' (
     name: net:
-    lib.nameValuePair "veth-${name}" {
-      allowedTCPPorts = lib.mkDefault net.localhost.allowedPorts;
-      allowedUDPPorts = lib.mkDefault net.localhost.allowedPorts;
-    }
+    lib.nameValuePair "veth-${name}" (
+      if net.allowedPorts == null then
+        {
+          allowedTCPPortRanges = lib.mkDefault [ allPortRange ];
+          allowedUDPPortRanges = lib.mkDefault [ allPortRange ];
+        }
+      else
+        {
+          allowedTCPPorts = lib.mkDefault net.allowedPorts;
+          allowedUDPPorts = lib.mkDefault net.allowedPorts;
+        }
+    )
   ) localhostNets;
 
   # ── Assertion helpers ─────────────────────────────────────────────────
@@ -710,16 +689,18 @@ let
     lib.mapAttrsToList (
       name: net:
       let
-        hasWg = net.wireguard != null;
-        hasLocalhost = net.localhost != null;
-        hasLan = net.lan != null;
-        hasIsolated = net.isolated;
-        typeCount = lib.count lib.id [
-          hasWg
-          hasLocalhost
-          hasLan
-          hasIsolated
-        ];
+        hasWg = net.type == "wireguard";
+        hasLocalhost = net.type == "localhost";
+        hasLan = net.type == "lan";
+        hasIsolated = net.type == "isolated";
+        hasWireguardOptions =
+          net.privateKeyFile != null
+          || net.address != [ ]
+          || net.addressFile != null
+          || net.peers != [ ]
+          || net.mtu != null;
+        effectiveAllowedRanges =
+          if net.allowedRanges == null then defaultLanAllowedRanges else net.allowedRanges;
         cidrV6Pattern = "^[0-9a-fA-F:]+/[0-9]{1,3}$";
         isCidr = addr: builtins.match cidrPattern addr != null || builtins.match cidrV6Pattern addr != null;
         ipv4Pattern = "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$";
@@ -728,10 +709,6 @@ let
         {
           assertion = builtins.match "^[A-Za-z0-9_-]+$" name != null;
           message = "cloister-netns.networks.${name}: name must match ^[A-Za-z0-9_-]+$.";
-        }
-        {
-          assertion = typeCount == 1;
-          message = "cloister-netns.networks.${name}: exactly one of wireguard, localhost, lan, or isolated must be set.";
         }
         {
           assertion = !(net.dns.nameservers != [ ] && net.dns.nameserversFile != null);
@@ -752,19 +729,23 @@ let
       ++ lib.optionals hasWg (
         [
           {
-            assertion = builtins.length net.wireguard.address > 0 || net.wireguard.addressFile != null;
+            assertion = net.privateKeyFile != null;
+            message = "cloister-netns.networks.${name}: wireguard requires privateKeyFile.";
+          }
+          {
+            assertion = builtins.length net.address > 0 || net.addressFile != null;
             message = "cloister-netns.networks.${name}: wireguard requires at least one address or addressFile.";
           }
           {
-            assertion = !(builtins.length net.wireguard.address > 0 && net.wireguard.addressFile != null);
+            assertion = !(builtins.length net.address > 0 && net.addressFile != null);
             message = "cloister-netns.networks.${name}: address and addressFile are mutually exclusive.";
           }
           {
-            assertion = builtins.length net.wireguard.peers > 0;
+            assertion = builtins.length net.peers > 0;
             message = "cloister-netns.networks.${name}: wireguard requires at least one peer.";
           }
           {
-            assertion = lib.all (p: p.endpoint != null || p.endpointFile != null) net.wireguard.peers;
+            assertion = lib.all (p: p.endpoint != null || p.endpointFile != null) net.peers;
             message = "cloister-netns.networks.${name}: all wireguard peers must have an endpoint or endpointFile.";
           }
           {
@@ -774,7 +755,7 @@ let
         ]
         ++ (
           let
-            invalidAddrs = builtins.filter (addr: !isCidr addr) net.wireguard.address;
+            invalidAddrs = builtins.filter (addr: !isCidr addr) net.address;
           in
           [
             {
@@ -792,7 +773,7 @@ let
             assertion = !(peer.endpoint != null && peer.endpointFile != null);
             message = "cloister-netns.networks.${name}: endpoint and endpointFile are mutually exclusive.";
           }
-        ]) net.wireguard.peers
+        ]) net.peers
       )
       ++ lib.optionals (hasLocalhost || hasLan) [
         {
@@ -800,21 +781,45 @@ let
           message = "cloister-netns.networks.${name}: veth interface name 'veth-${name}-ns' exceeds 15 character Linux limit.";
         }
       ]
+      ++ lib.optionals hasLocalhost [
+        {
+          assertion = net.allowedPorts == null || builtins.length net.allowedPorts > 0;
+          message = "cloister-netns.networks.${name}: allowedPorts must be non-empty when set; omit it or set it to null to allow all ports.";
+        }
+      ]
       ++ lib.optionals hasLan (
         let
-          invalidRanges = builtins.filter (r: builtins.match cidrPattern r == null) net.lan.allowedRanges;
+          invalidRanges = builtins.filter (r: builtins.match cidrPattern r == null) effectiveAllowedRanges;
         in
         [
           {
-            assertion = builtins.length net.lan.allowedRanges > 0;
-            message = "cloister-netns.networks.${name}: lan.allowedRanges must be non-empty.";
+            assertion = builtins.length effectiveAllowedRanges > 0;
+            message = "cloister-netns.networks.${name}: allowedRanges must be non-empty.";
           }
           {
             assertion = invalidRanges == [ ];
-            message = "cloister-netns.networks.${name}: lan.allowedRanges contains invalid CIDR notation: ${lib.concatStringsSep ", " invalidRanges}. Expected format: a.b.c.d/prefix (e.g. 10.0.0.0/8).";
+            message = "cloister-netns.networks.${name}: allowedRanges contains invalid CIDR notation: ${lib.concatStringsSep ", " invalidRanges}. Expected format: a.b.c.d/prefix (e.g. 10.0.0.0/8).";
           }
         ]
       )
+      ++ lib.optionals (!hasWg) [
+        {
+          assertion = !hasWireguardOptions;
+          message = "cloister-netns.networks.${name}: WireGuard options are only valid when type is `wireguard`.";
+        }
+      ]
+      ++ lib.optionals (!hasLocalhost) [
+        {
+          assertion = net.allowedPorts == null;
+          message = "cloister-netns.networks.${name}: allowedPorts is only valid when type is `localhost`.";
+        }
+      ]
+      ++ lib.optionals (!hasLan) [
+        {
+          assertion = net.allowedRanges == null;
+          message = "cloister-netns.networks.${name}: allowedRanges is only valid when type is `lan`.";
+        }
+      ]
       ++ lib.optionals hasIsolated [
         {
           assertion = net.dns.nameservers == [ ] && net.dns.nameserversFile == null;
@@ -825,17 +830,13 @@ let
   );
 
   allVethAddresses =
-    let
-      localhostPairs = lib.mapAttrsToList (name: _: {
+    if vethPool == null then
+      [ ]
+    else
+      lib.mapAttrsToList (name: _: {
         inherit name;
-        inherit (effectiveLocalhostAddressPairs.${name}) hostAddress namespaceAddress;
-      }) localhostNets;
-      lanPairs = lib.mapAttrsToList (name: _: {
-        inherit name;
-        inherit (effectiveLanAddressPairs.${name}) hostAddress namespaceAddress;
-      }) lanNets;
-    in
-    localhostPairs ++ lanPairs;
+        inherit (effectiveVethAddressPairs.${name}) hostAddress namespaceAddress;
+      }) (localhostNets // lanNets);
 
   duplicateHostAddresses = lib.filterAttrs (_: v: builtins.length v > 1) (
     builtins.groupBy (x: x.hostAddress) allVethAddresses
@@ -843,10 +844,6 @@ let
   duplicateNamespaceAddresses = lib.filterAttrs (_: v: builtins.length v > 1) (
     builtins.groupBy (x: x.namespaceAddress) allVethAddresses
   );
-
-  expectedNsNotFound = lib.filter (
-    ns: !builtins.elem ns effectiveAllowedNamespaces
-  ) cfg.expectedNamespaces;
 
   enabled = cfg.networks != { };
 in
@@ -860,68 +857,14 @@ in
         namespace and a systemd service (cloister-netns-<name>). Namespace names
         are automatically added to the helper allowlist.
 
-        Each network must configure exactly one of `wireguard`, `localhost`, `lan`, or `isolated`.
+        Each network must set `type` to one of `wireguard`, `localhost`, `lan`, or `isolated`.
       '';
     };
 
-    addressPools = lib.mkOption {
-      type = lib.types.submodule {
-        options = {
-          localhost = lib.mkOption {
-            type = lib.types.str;
-            default = "172.30.0.0/16";
-            description = "CIDR pool for auto-assigning localhost veth addresses (/30 blocks by sorted namespace index).";
-          };
-          lan = lib.mkOption {
-            type = lib.types.str;
-            default = "172.29.0.0/16";
-            description = "CIDR pool for auto-assigning LAN veth addresses (/30 blocks by sorted namespace index).";
-          };
-        };
-      };
-      default = { };
-      description = "Address pools used for deterministic index-based veth auto-assignment.";
-    };
-
-    firewall = lib.mkOption {
-      type = lib.types.submodule {
-        options = {
-          autoOpenLocalhostPorts = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = ''
-              Automatically allow localhost allowedPorts from veth-<name>:
-              adds per-interface host firewall openings and matching accepts in
-              cloister-netns localhost nft input rules.
-            '';
-          };
-        };
-      };
-      default = { };
-      description = "Host firewall integration for cloister-netns managed networks.";
-    };
-
-    expectedNamespaces = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      description = ''
-        Namespace names expected by sandboxes.
-        An assertion verifies each is in networks.
-      '';
-    };
-
-    startup.waitForNetworkOnline = lib.mkOption {
-      type = lib.types.either lib.types.bool (lib.types.enum [ "auto" ]);
-      default = "auto";
-      description = ''
-        Whether WireGuard-backed namespaces should wait for `network-online.target`.
-
-        `true` always waits, `false` never waits, and `"auto"` waits only when a
-        peer endpoint may require name resolution at boot. In `"auto"` mode,
-        literal inline IP endpoints skip the wait while `endpointFile` values are
-        treated conservatively and still wait because the file content is not
-        known during evaluation.
-      '';
+    veth.addressPool = lib.mkOption {
+      type = lib.types.str;
+      default = "172.29.0.0/16";
+      description = "CIDR pool for auto-assigning veth addresses for localhost and LAN namespaces (/30 blocks by sorted namespace index).";
     };
 
     group = lib.mkOption {
@@ -933,52 +876,21 @@ in
       '';
     };
 
-    enforceExecAllowlist = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Require cloister-netns to only exec binaries listed in allowedExecPaths.";
-    };
-
-    allowedExecPaths = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ "${cloister-sandbox}/bin/cloister-sandbox" ];
-      description = ''
-        Executable paths that cloister-netns is allowed to exec.
-        By default includes the compiled cloister-sandbox binary so that
-        the Rust sandbox runner can be re-exec'd through the netns helper.
-      '';
-    };
   };
 
   config = lib.mkIf enabled {
     assertions = [
       {
-        assertion = expectedNsNotFound == [ ];
-        message = "cloister-netns: expectedNamespaces contains names not in networks: ${lib.concatStringsSep ", " expectedNsNotFound}";
+        assertion = vethPool != null;
+        message = "cloister-netns.veth.addressPool must be valid IPv4 CIDR notation (e.g. 172.29.0.0/16).";
       }
       {
-        assertion = localhostPool != null;
-        message = "cloister-netns.addressPools.localhost must be valid IPv4 CIDR notation (e.g. 172.30.0.0/16).";
+        assertion = vethPool == null || vethPool.prefix <= 30;
+        message = "cloister-netns.veth.addressPool prefix must be <= 30 to allocate /30 pairs.";
       }
       {
-        assertion = lanPool != null;
-        message = "cloister-netns.addressPools.lan must be valid IPv4 CIDR notation (e.g. 172.29.0.0/16).";
-      }
-      {
-        assertion = localhostPool == null || localhostPool.prefix <= 30;
-        message = "cloister-netns.addressPools.localhost prefix must be <= 30 to allocate /30 pairs.";
-      }
-      {
-        assertion = lanPool == null || lanPool.prefix <= 30;
-        message = "cloister-netns.addressPools.lan prefix must be <= 30 to allocate /30 pairs.";
-      }
-      {
-        assertion = localhostPool == null || builtins.length localhostNames <= localhostPool.slotCount;
-        message = "cloister-netns: localhost address pool exhausted for configured namespaces.";
-      }
-      {
-        assertion = lanPool == null || builtins.length lanNames <= lanPool.slotCount;
-        message = "cloister-netns: lan address pool exhausted for configured namespaces.";
+        assertion = vethPool == null || builtins.length vethNames <= vethPool.slotCount;
+        message = "cloister-netns: veth address pool exhausted for configured namespaces.";
       }
     ]
     ++ networkAssertions
@@ -1019,7 +931,7 @@ in
 
     boot.kernel.sysctl = lib.mkIf (lanNets != { }) { "net.ipv4.ip_forward" = 1; };
 
-    networking.firewall.interfaces = lib.mkIf cfg.firewall.autoOpenLocalhostPorts localhostFirewallInterfaces;
+    networking.firewall.interfaces = localhostFirewallInterfaces;
 
     systemd.services = wireguardServices // localhostServices // lanServices // isolatedServices;
   };

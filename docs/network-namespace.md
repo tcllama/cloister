@@ -24,10 +24,7 @@ Install the `cloister-netns` NixOS module on the host system and define at least
 ```nix
 {
   imports = [ cloister.nixosModules.cloister-netns ];
-  cloister-netns = {
-    enable = true;
-    networks.vpn.isolated = true;
-  };
+  cloister-netns.networks.vpn.type = "isolated";
 }
 ```
 
@@ -65,18 +62,17 @@ Each entry in `cloister-netns.networks` becomes a systemd oneshot service (`cloi
 
 ```nix
 cloister-netns.networks.vpn = {
-  wireguard = {
-    privateKeyFile = "/run/secrets/wg-private-key";
-    address = [ "10.0.0.2/32" ];
-    peers = [
-      {
-        publicKey = "abc123...";
-        endpoint = "vpn.example.com:51820";
-        presharedKeyFile = "/run/secrets/wg-preshared-key";
-        persistentKeepalive = 25;
-      }
-    ];
-  };
+  type = "wireguard";
+  privateKeyFile = "/run/secrets/wg-private-key";
+  address = [ "10.0.0.2/32" ];
+  peers = [
+    {
+      publicKey = "abc123...";
+      endpoint = "vpn.example.com:51820";
+      presharedKeyFile = "/run/secrets/wg-preshared-key";
+      persistentKeepalive = 25;
+    }
+  ];
   dns.nameservers = [ "1.1.1.1" "8.8.8.8" ];
 };
 ```
@@ -89,25 +85,26 @@ veth pair with DNAT to host ports:
 
 ```nix
 cloister-netns.networks.devports = {
-  localhost = {
-    allowedPorts = [ 8000 8080 8443 ];
-  };
+  type = "localhost";
+  # Omit allowedPorts, or leave it null, to allow all host localhost ports.
+  # Set a list to restrict access to selected ports.
+  allowedPorts = [ 8000 8080 8443 ];
 };
 ```
 
 Inside the sandbox, access these ports as `host.internal:<port>` (for example, `curl host.internal:8080`). `127.0.0.1` remains namespace-local loopback and is not redirected to host services.
 If `/etc/netns/<name>/hosts` is missing, Cloister falls back to binding host `/etc/hosts` so basic hostname resolution still works. If `/etc/netns/<name>/resolv.conf` is missing, Cloister likewise falls back to host `/etc/resolv.conf` so DNS still works.
 
-By default, `cloister-netns.firewall.autoOpenLocalhostPorts = true` does two things for localhost namespaces:
+For localhost namespaces, Cloister always does two things for the selected port policy:
 
 - Adds host firewall interface openings on `veth-<name>` (`networking.firewall.interfaces`).
-- Adds matching accepts in the module's localhost nft `input` chain for `allowedPorts`.
+- Adds matching accepts in the module's localhost nft `input` chain.
 
-If you set `cloister-netns.firewall.autoOpenLocalhostPorts = false`, both of those auto-open behaviors are disabled. In that mode, localhost DNAT still exists, but namespace-to-host traffic for those ports is dropped unless you add your own host firewall/nftables rules.
+When `allowedPorts` is unset or `null`, all host localhost ports are reachable. Set `allowedPorts` to a list to restrict access to selected ports.
 
 IPv6 is disabled on the managed veth pair for `localhost` namespaces, and matching `ip6` nftables drop rules are installed as a deny-by-default backstop.
 
-veth addresses are auto-assigned from `cloister-netns.addressPools` using sorted namespace index. Each namespace gets a `/30` block; host side uses `.1`, namespace side uses `.2`.
+veth addresses for `localhost` and `lan` namespaces are auto-assigned from `cloister-netns.veth.addressPool` using sorted namespace index. Each namespace gets a `/30` block; host side uses `.1`, namespace side uses `.2`.
 
 ### LAN namespace
 
@@ -115,9 +112,8 @@ veth pair with forwarding to allowed CIDR ranges:
 
 ```nix
 cloister-netns.networks.lanonly = {
-  lan = {
-    allowedRanges = [ "10.0.0.0/8" "192.168.0.0/16" ];
-  };
+  type = "lan";
+  allowedRanges = [ "10.0.0.0/8" "192.168.0.0/16" ];
   dns.nameservers = [ "10.0.0.1" ];
 };
 ```
@@ -127,10 +123,9 @@ cloister-netns.networks.lanonly = {
 ## Effective packet rules summary
 
 - `localhost` networks:
-- `prerouting` DNATs `veth-<name>` traffic on `allowedPorts` to `127.0.0.1`.
-- `forward` allows only `allowedPorts` from `veth-<name>`, then drops the rest.
-- `input` always allows established/related traffic and drops other traffic from `veth-<name>`.
-- When `autoOpenLocalhostPorts = true`, `input` also accepts new TCP/UDP traffic to `allowedPorts` from `veth-<name>`.
+- `prerouting` DNATs `veth-<name>` TCP/UDP traffic to `127.0.0.1`, either for all ports when `allowedPorts = null` or for the configured ports.
+- `forward` allows the selected TCP/UDP ports from `veth-<name>`, then drops the rest.
+- `input` always allows established/related traffic and new TCP/UDP traffic for the selected ports from `veth-<name>`, then drops other traffic from `veth-<name>`.
 - IPv6 traffic from or to `veth-<name>` is dropped.
 - `lan` networks:
 - `forward` allows only destinations in `allowedRanges` from `veth-<name>`.
@@ -145,7 +140,7 @@ Loopback only, no external connectivity:
 
 ```nix
 cloister-netns.networks.airgap = {
-  isolated = true;
+  type = "isolated";
 };
 ```
 
@@ -171,18 +166,17 @@ File-based options expect:
 
 ```nix
 cloister-netns.networks.vpn = {
-  wireguard = {
-    privateKeyFile = config.sops.secrets."wg/private-key".path;
-    addressFile = config.sops.secrets."wg/address".path;
-    peers = [
-      {
-        publicKeyFile = config.sops.secrets."wg/peer-public-key".path;
-        endpointFile = config.sops.secrets."wg/peer-endpoint".path;
-        presharedKeyFile = config.sops.secrets."wg/preshared-key".path;
-        persistentKeepalive = 25;
-      }
-    ];
-  };
+  type = "wireguard";
+  privateKeyFile = config.sops.secrets."wg/private-key".path;
+  addressFile = config.sops.secrets."wg/address".path;
+  peers = [
+    {
+      publicKeyFile = config.sops.secrets."wg/peer-public-key".path;
+      endpointFile = config.sops.secrets."wg/peer-endpoint".path;
+      presharedKeyFile = config.sops.secrets."wg/preshared-key".path;
+      persistentKeepalive = 25;
+    }
+  ];
   dns.nameserversFile = config.sops.secrets."wg/dns".path;
 };
 ```
@@ -195,24 +189,26 @@ cloister-netns.networks.vpn = {
 |--------|------|---------|---------|
 | `cloister-netns.group` | str | `"cloister-netns"` | Unix group allowed to execute the helper |
 | `cloister-netns.networks` | attrsOf submodule | `{}` | Declarative namespace definitions included in the helper allowlist; non-empty networks install the helper and services |
-| `cloister-netns.addressPools.localhost` | str | `"172.30.0.0/16"` | CIDR pool used for localhost veth auto-assignment |
-| `cloister-netns.addressPools.lan` | str | `"172.29.0.0/16"` | CIDR pool used for LAN veth auto-assignment |
-| `cloister-netns.firewall.autoOpenLocalhostPorts` | bool | `true` | Auto-open host firewall ports for localhost namespaces on `veth-<name>` |
-| `cloister-netns.expectedNamespaces` | listOf str | `[]` | Extra namespace names to assert exist in `networks` |
-| `cloister-netns.enforceExecAllowlist` | bool | `true` | Restrict post-exec to `allowedExecPaths` only |
-| `cloister-netns.allowedExecPaths` | listOf str | `[cloister-sandbox]` | Executables the helper is allowed to exec |
+| `cloister-netns.veth.addressPool` | str | `"172.29.0.0/16"` | CIDR pool used for localhost and LAN veth auto-assignment |
 
-### Per-network WireGuard options (`cloister-netns.networks.<name>.wireguard.*`)
+### Per-network options (`cloister-netns.networks.<name>.*`)
 
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
-| `privateKeyFile` | path | *(required)* | Path to WireGuard private key file |
+| `type` | enum | *(required)* | Namespace type: `wireguard`, `localhost`, `lan`, or `isolated` |
+| `dns` | submodule | `{}` | DNS configuration for non-isolated namespaces |
+
+### WireGuard network options (`cloister-netns.networks.<name>.*`)
+
+| Option | Type | Default | Purpose |
+|--------|------|---------|---------|
+| `privateKeyFile` | nullOr path | `null` | Path to WireGuard private key file; required when `type = "wireguard"` |
 | `address` | listOf str | `[]` | Interface addresses in CIDR notation (mutually exclusive with `addressFile`) |
 | `addressFile` | nullOr path | `null` | File containing a single CIDR address (mutually exclusive with `address`) |
-| `peers` | listOf submodule | *(required)* | Peer configurations |
+| `peers` | listOf submodule | `[]` | Peer configurations; must be non-empty when `type = "wireguard"` |
 | `mtu` | nullOr positive int | `null` | Optional interface MTU |
 
-### Per-peer options (`cloister-netns.networks.<name>.wireguard.peers.*`)
+### Per-peer options (`cloister-netns.networks.<name>.peers.*`)
 
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
@@ -230,18 +226,18 @@ cloister-netns.networks.vpn = {
 | `nameservers` | listOf str | `[]` | DNS servers for the namespace (mutually exclusive with `nameserversFile`) |
 | `nameserversFile` | nullOr path | `null` | File containing DNS servers, comma/space/newline separated (mutually exclusive with `nameservers`) |
 
-### Per-network localhost options (`cloister-netns.networks.<name>.localhost.*`)
+### Localhost network options (`cloister-netns.networks.<name>.*`)
 
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
-| `allowedPorts` | listOf port | `[8000 8080 8443]` | Host ports accessible via DNAT |
+| `allowedPorts` | nullOr listOf port | `null` | Host ports accessible via DNAT; `null` allows all ports for localhost namespaces |
 
-### Per-network LAN options (`cloister-netns.networks.<name>.lan.*`)
+### LAN network options (`cloister-netns.networks.<name>.*`)
 
 | Option | Type | Default | Purpose |
 |--------|------|---------|---------|
-| `allowedRanges` | listOf str | `["10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"]` | CIDR ranges the namespace can reach (must be valid IPv4 CIDR notation, e.g. `10.0.0.0/8`) |
+| `allowedRanges` | nullOr listOf str | `null` | CIDR ranges the namespace can reach; `null` uses RFC1918 ranges for LAN namespaces |
 
-### Per-network isolated options (`cloister-netns.networks.<name>.isolated`)
+### Isolated network type
 
-Boolean flag. Set `isolated = true;` to enable. DNS configuration is not applicable (assertion error if set).
+Set `type = "isolated";` to enable a loopback-only namespace. DNS configuration is not applicable (assertion error if set).

@@ -408,13 +408,13 @@ Setting `network.namespace` implies networking for that sandbox even if a preset
 ```nix
 {
   imports = [ cloister.nixosModules.cloister-netns ];
-  cloister-netns.networks.vpn.isolated = true;
+  cloister-netns.networks.vpn.type = "isolated";
 }
 ```
 
 For full details (declarative namespace types, WireGuard and LAN examples, file-based secret options, and all `cloister-netns.*` options), see [Network Namespaces](network-namespace.md).
-For veth-based namespace types (`localhost`, `lan`), addresses are auto-assigned from host-level pools (`cloister-netns.addressPools.localhost` and `cloister-netns.addressPools.lan`).
-For localhost namespaces, `cloister-netns.firewall.autoOpenLocalhostPorts = true` (default) auto-opens host firewall ports on `veth-<name>` and adds matching accepts in cloister-netns localhost nft `input` rules. Setting it to `false` disables both auto-open paths.
+For veth-based namespace types (`localhost`, `lan`), addresses are auto-assigned from `cloister-netns.veth.addressPool`.
+For localhost namespaces, Cloister always opens host firewall ports on `veth-<name>` and adds matching accepts in cloister-netns localhost nft `input` rules for `allowedPorts`.
 If `/etc/netns/<name>/hosts` or `/etc/netns/<name>/resolv.conf` is missing, Cloister falls back to host `/etc/hosts` and `/etc/resolv.conf`.
 
 ### Git configuration

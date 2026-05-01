@@ -17,96 +17,88 @@ let
     else
       throw "${label}: expected ${builtins.toJSON first} to appear before ${builtins.toJSON second}";
 
-  helperWithCustomExecPaths = pkgs.callPackage ../../helpers/cloister-netns {
-    allowedNamespaces = [
-      "vpn"
-      "dev"
-    ];
-    enforceExecAllowlist = false;
-    allowedExecPaths = [
-      "/run/current-system/sw/bin/custom-launcher"
-      "/opt/cloister/bin/helper"
-    ];
-    requiredGroup = "cloister-netns";
-  };
-
   eval = nixos.netns {
     cloister-netns = {
-      expectedNamespaces = [
-        "dev"
-        "lan"
-      ];
       networks = {
-        dev.localhost.allowedPorts = [ 3000 ];
-        lan.lan.allowedRanges = [ "192.168.1.0/24" ];
+        dev = {
+          type = "localhost";
+          allowedPorts = [ 3000 ];
+        };
+        lan = {
+          type = "lan";
+          allowedRanges = [ "192.168.1.0/24" ];
+        };
       };
-    };
-  };
-
-  missingNamespace = nixos.netns {
-    cloister-netns = {
-      networks.vpn.isolated = true;
-      expectedNamespaces = [ "missing" ];
     };
   };
 
   customGroup = nixos.netns {
     cloister-netns = {
       group = "sandboxers";
-      networks.vpn.isolated = true;
+      networks.vpn.type = "isolated";
     };
   };
 
-  invalidLocalhostPool = nixos.netns {
+  invalidVethPool = nixos.netns {
     cloister-netns = {
-      networks.vpn.isolated = true;
-      addressPools.localhost = "bad";
+      networks.vpn.type = "isolated";
+      veth.addressPool = "bad";
     };
   };
 
-  localhostPoolExhausted = nixos.netns {
+  vethPoolExhausted = nixos.netns {
     cloister-netns = {
-      addressPools.localhost = "172.30.0.0/30";
+      veth.addressPool = "172.29.0.0/30";
       networks = {
-        a.localhost = { };
-        b.localhost = { };
+        a.type = "localhost";
+        b.type = "localhost";
       };
     };
   };
 
   invalidLanRange = nixos.netns {
     cloister-netns = {
-      networks.lan.lan.allowedRanges = [ "not-a-cidr" ];
+      networks.lan = {
+        type = "lan";
+        allowedRanges = [ "not-a-cidr" ];
+      };
+    };
+  };
+
+  emptyLocalhostPorts = nixos.netns {
+    cloister-netns = {
+      networks.dev = {
+        type = "localhost";
+        allowedPorts = [ ];
+      };
     };
   };
 
   ifnameTooLong = nixos.netns {
     cloister-netns = {
-      networks.abcdefghijkl.localhost = { };
+      networks.abcdefghijkl.type = "localhost";
     };
   };
 
   isolatedNoDns = nixos.netns {
     cloister-netns = {
       networks.offline = {
-        isolated = true;
+        type = "isolated";
         dns.nameservers = [ "1.1.1.1" ];
       };
     };
   };
 
-  multipleTypes = nixos.netns {
+  missingWireguardConfig = nixos.netns {
     cloister-netns = {
-      networks.mixed = {
-        isolated = true;
-        localhost = { };
-      };
+      networks.missing-wg.type = "wireguard";
     };
   };
 
   wgInvalidAddress = nixos.netns {
     cloister-netns = {
-      networks.vpn.wireguard = {
+      networks.vpn = {
+        type = "wireguard";
         privateKeyFile = pkgs.writeText "wg-private-key" "private";
         address = [ "bad-address" ];
         peers = [
@@ -119,37 +111,20 @@ let
     };
   };
 
-  lanPoolExhausted = nixos.netns {
+  invalidVethPoolPrefix = nixos.netns {
     cloister-netns = {
-      addressPools.lan = "172.29.0.0/30";
-      networks = {
-        alpha.lan = { };
-        beta.lan = { };
-      };
-    };
-  };
-
-  invalidLanPool = nixos.netns {
-    cloister-netns = {
-      networks.vpn.isolated = true;
-      addressPools.lan = "bad";
-    };
-  };
-
-  invalidLocalhostPoolPrefix = nixos.netns {
-    cloister-netns = {
-      networks.vpn.isolated = true;
-      addressPools.localhost = "172.30.0.0/31";
+      networks.vpn.type = "isolated";
+      veth.addressPool = "172.29.0.0/31";
     };
   };
 
   orderedPairsEval = nixos.netns {
     cloister-netns = {
       networks = {
-        zeta.localhost = { };
-        alpha.localhost = { };
-        gamma.lan = { };
-        beta.lan = { };
+        zeta.type = "localhost";
+        alpha.type = "localhost";
+        gamma.type = "lan";
+        beta.type = "lan";
       };
     };
   };
@@ -165,52 +140,47 @@ let
 
   fileBackedInputsEval = nixos.netns {
     cloister-netns = {
-      firewall.autoOpenLocalhostPorts = false;
-      enforceExecAllowlist = false;
-      allowedExecPaths = [
-        "/run/current-system/sw/bin/custom-launcher"
-        "/opt/cloister/bin/helper"
-      ];
       networks = {
         vpn = {
-          wireguard = {
-            privateKeyFile = pkgs.writeText "wg-private-key-file-backed" "private\n";
-            addressFile = wgAddressFile;
-            mtu = 1420;
-            peers = [
-              {
-                publicKeyFile = wgPublicKeyFile;
-                endpointFile = wgEndpointFile;
-                persistentKeepalive = 21;
-              }
-            ];
-          };
+          type = "wireguard";
+          privateKeyFile = pkgs.writeText "wg-private-key-file-backed" "private\n";
+          addressFile = wgAddressFile;
+          mtu = 1420;
+          peers = [
+            {
+              publicKeyFile = wgPublicKeyFile;
+              endpointFile = wgEndpointFile;
+              persistentKeepalive = 21;
+            }
+          ];
           dns.nameserversFile = dnsFile;
         };
-        dev.localhost.allowedPorts = [ 4000 ];
+        dev = {
+          type = "localhost";
+          allowedPorts = [ 4000 ];
+        };
       };
     };
   };
 
   isolatedEval = nixos.netns {
     cloister-netns = {
-      networks.offline.isolated = true;
+      networks.offline.type = "isolated";
     };
   };
 
   wgAutoHostnameEval = nixos.netns {
     cloister-netns = {
       networks.vpn = {
-        wireguard = {
-          privateKeyFile = pkgs.writeText "wg-private-key-auto-host" "private\n";
-          address = [ "10.42.0.2/32" ];
-          peers = [
-            {
-              publicKey = "public";
-              endpoint = "vpn.example:51820";
-            }
-          ];
-        };
+        type = "wireguard";
+        privateKeyFile = pkgs.writeText "wg-private-key-auto-host" "private\n";
+        address = [ "10.42.0.2/32" ];
+        peers = [
+          {
+            publicKey = "public";
+            endpoint = "vpn.example:51820";
+          }
+        ];
       };
     };
   };
@@ -218,63 +188,15 @@ let
   wgAutoIpEval = nixos.netns {
     cloister-netns = {
       networks.vpn = {
-        wireguard = {
-          privateKeyFile = pkgs.writeText "wg-private-key-auto-ip" "private\n";
-          address = [ "10.43.0.2/32" ];
-          peers = [
-            {
-              publicKey = "public";
-              endpoint = "203.0.113.10:51820";
-            }
-          ];
-        };
-      };
-    };
-  };
-
-  wgForcedWaitEval = nixos.netns {
-    cloister-netns = {
-      startup.waitForNetworkOnline = true;
-      networks.vpn = {
-        wireguard = {
-          privateKeyFile = pkgs.writeText "wg-private-key-force-wait" "private\n";
-          address = [ "10.44.0.2/32" ];
-          peers = [
-            {
-              publicKey = "public";
-              endpoint = "203.0.113.11:51820";
-            }
-          ];
-        };
-      };
-    };
-  };
-
-  wgForcedNoWaitEval = nixos.netns {
-    cloister-netns = {
-      startup.waitForNetworkOnline = false;
-      networks.vpn = {
-        wireguard = {
-          privateKeyFile = pkgs.writeText "wg-private-key-force-no-wait" "private\n";
-          address = [ "10.45.0.2/32" ];
-          peers = [
-            {
-              publicKey = "public";
-              endpoint = "vpn.example:51820";
-            }
-          ];
-        };
-      };
-    };
-  };
-
-  duplicateAddressEval = nixos.netns {
-    cloister-netns = {
-      addressPools.localhost = "172.30.0.0/30";
-      addressPools.lan = "172.30.0.0/30";
-      networks = {
-        alpha.localhost = { };
-        beta.lan = { };
+        type = "wireguard";
+        privateKeyFile = pkgs.writeText "wg-private-key-auto-ip" "private\n";
+        address = [ "10.43.0.2/32" ];
+        peers = [
+          {
+            publicKey = "public";
+            endpoint = "203.0.113.10:51820";
+          }
+        ];
       };
     };
   };
@@ -282,16 +204,15 @@ let
   dnsConflict = nixos.netns {
     cloister-netns = {
       networks.vpn = {
-        wireguard = {
-          privateKeyFile = pkgs.writeText "wg-private-key-dns-conflict" "private\n";
-          address = [ "10.0.0.2/32" ];
-          peers = [
-            {
-              publicKey = "public";
-              endpoint = "vpn.example:51820";
-            }
-          ];
-        };
+        type = "wireguard";
+        privateKeyFile = pkgs.writeText "wg-private-key-dns-conflict" "private\n";
+        address = [ "10.0.0.2/32" ];
+        peers = [
+          {
+            publicKey = "public";
+            endpoint = "vpn.example:51820";
+          }
+        ];
         dns = {
           nameservers = [ "1.1.1.1" ];
           nameserversFile = dnsFile;
@@ -302,7 +223,8 @@ let
 
   wgAddressConflict = nixos.netns {
     cloister-netns = {
-      networks.vpn.wireguard = {
+      networks.vpn = {
+        type = "wireguard";
         privateKeyFile = pkgs.writeText "wg-private-key-address-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
         addressFile = wgAddressFile;
@@ -318,7 +240,8 @@ let
 
   peerKeyConflict = nixos.netns {
     cloister-netns = {
-      networks.vpn.wireguard = {
+      networks.vpn = {
+        type = "wireguard";
         privateKeyFile = pkgs.writeText "wg-private-key-peer-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
         peers = [
@@ -334,7 +257,8 @@ let
 
   peerEndpointConflict = nixos.netns {
     cloister-netns = {
-      networks.vpn.wireguard = {
+      networks.vpn = {
+        type = "wireguard";
         privateKeyFile = pkgs.writeText "wg-private-key-endpoint-conflict" "private\n";
         address = [ "10.0.0.2/32" ];
         peers = [
@@ -371,9 +295,6 @@ let
   isolatedService = isolatedEval.config.systemd.services."cloister-netns-offline";
   autoHostnameService = wgAutoHostnameEval.config.systemd.services."cloister-netns-vpn";
   autoIpService = wgAutoIpEval.config.systemd.services."cloister-netns-vpn";
-  forcedWaitService = wgForcedWaitEval.config.systemd.services."cloister-netns-vpn";
-  forcedNoWaitService = wgForcedNoWaitEval.config.systemd.services."cloister-netns-vpn";
-  helperDrvAttrs = helperWithCustomExecPaths.drvAttrs or { };
 in
 checks.mkCheck "test-cloister-netns" [
   (checks.expectTrue "netns wrapper configured" (eval.config.security.wrappers ? "cloister-netns"))
@@ -391,21 +312,27 @@ checks.mkCheck "test-cloister-netns" [
   (checks.expectEq "firewall interface opens UDP localhost ports too" [
     3000
   ] eval.config.networking.firewall.interfaces."veth-dev".allowedUDPPorts)
+  (checks.expectEq "default localhost firewall opens all TCP ports" [
+    {
+      from = 1;
+      to = 65535;
+    }
+  ] orderedPairsEval.config.networking.firewall.interfaces."veth-alpha".allowedTCPPortRanges)
   (checks.expectEq "lan enables ip forwarding" 1 eval.config.boot.kernel.sysctl."net.ipv4.ip_forward")
   (checks.expectContains "ordered localhost host address allocation is deterministic"
-    "ip addr add 172.30.0.1/30 dev veth-alpha"
+    "ip addr add 172.29.0.1/30 dev veth-alpha"
     orderedAlphaStart
   )
   (checks.expectContains "ordered localhost next slot is deterministic"
-    "ip addr add 172.30.0.5/30 dev veth-zeta"
+    "ip addr add 172.29.0.13/30 dev veth-zeta"
     orderedZetaStart
   )
   (checks.expectContains "ordered lan host address allocation is deterministic"
-    "ip addr add 172.29.0.1/30 dev veth-beta"
+    "ip addr add 172.29.0.5/30 dev veth-beta"
     orderedBetaStart
   )
   (checks.expectContains "ordered lan next slot is deterministic"
-    "ip addr add 172.29.0.5/30 dev veth-gamma"
+    "ip addr add 172.29.0.9/30 dev veth-gamma"
     orderedGammaStart
   )
   (checks.expectContains "localhost disables host-side IPv6 on the veth"
@@ -432,19 +359,13 @@ checks.mkCheck "test-cloister-netns" [
   (checks.expectEq "wireguard literal IP endpoint skips network-online in auto mode" [ ] (
     autoIpService.after or [ ]
   ))
-  (checks.expectEq "wireguard explicit wait forces network-online target" [
-    "network-online.target"
-  ] (forcedWaitService.after or [ ]))
-  (checks.expectEq "wireguard explicit no-wait skips network-online target" [ ] (
-    forcedNoWaitService.after or [ ]
-  ))
   (checks.expectEq "custom authorization group is honored" "sandboxers"
     customGroup.config.security.wrappers.cloister-netns.group
   )
   (checks.expectTrue "custom authorization group is declared" (
     customGroup.config.users.groups ? "sandboxers"
   ))
-  (checks.expectFalse "autoOpenLocalhostPorts can disable firewall integration" (
+  (checks.expectTrue "localhost firewall integration is always enabled" (
     fileBackedInputsEval.config.networking.firewall.interfaces ? "veth-dev"
   ))
   (checks.expectContains "nameserversFile content is rendered into service" ''echo "nameserver $d"''
@@ -476,36 +397,22 @@ checks.mkCheck "test-cloister-netns" [
     fileBackedVpnStart
   )
   (checks.expectContains "wireguard mtu is rendered" "link set wg-vpn mtu 1420" fileBackedVpnStart)
-  (checks.expectContains "allowed exec path list is embedded in helper package"
-    "/run/current-system/sw/bin/custom-launcher"
-    helperDrvAttrs.CLOISTER_NETNS_ALLOWED_EXEC_PATHS
+  (checks.expectAssertionMessage "invalid veth pool is rejected" invalidVethPool.assertions
+    "cloister-netns.veth.addressPool must be valid IPv4 CIDR notation"
   )
-  (checks.expectContains "second allowed exec path is embedded in helper package"
-    "/opt/cloister/bin/helper"
-    helperDrvAttrs.CLOISTER_NETNS_ALLOWED_EXEC_PATHS
+  (checks.expectAssertionMessage "veth pool exhaustion is rejected" vethPoolExhausted.assertions
+    "veth address pool exhausted"
   )
-  (checks.expectAssertionMessage "expected namespace mismatch fails" missingNamespace.assertions
-    "expectedNamespaces contains names not in networks"
-  )
-  (checks.expectAssertionMessage "invalid localhost pool is rejected" invalidLocalhostPool.assertions
-    "addressPools.localhost must be valid IPv4 CIDR notation"
-  )
-  (checks.expectAssertionMessage "localhost pool exhaustion is rejected"
-    localhostPoolExhausted.assertions
-    "localhost address pool exhausted"
-  )
-  (checks.expectAssertionMessage "lan pool validation is rejected" invalidLanPool.assertions
-    "addressPools.lan must be valid IPv4 CIDR notation"
-  )
-  (checks.expectAssertionMessage "localhost pool prefix must allow /30 allocation"
-    invalidLocalhostPoolPrefix.assertions
-    "addressPools.localhost prefix must be <= 30"
-  )
-  (checks.expectAssertionMessage "lan pool exhaustion is rejected" lanPoolExhausted.assertions
-    "lan address pool exhausted"
+  (checks.expectAssertionMessage "veth pool prefix must allow /30 allocation"
+    invalidVethPoolPrefix.assertions
+    "cloister-netns.veth.addressPool prefix must be <= 30"
   )
   (checks.expectAssertionMessage "invalid lan CIDR is rejected" invalidLanRange.assertions
-    "lan.allowedRanges contains invalid CIDR notation"
+    "allowedRanges contains invalid CIDR notation"
+  )
+  (checks.expectAssertionMessage "empty localhost port list is rejected"
+    emptyLocalhostPorts.assertions
+    "allowedPorts must be non-empty when set"
   )
   (checks.expectAssertionMessage "veth interface names must stay short" ifnameTooLong.assertions
     "veth interface name"
@@ -513,8 +420,9 @@ checks.mkCheck "test-cloister-netns" [
   (checks.expectAssertionMessage "isolated networks reject DNS" isolatedNoDns.assertions
     "isolated networks have no connectivity"
   )
-  (checks.expectAssertionMessage "each namespace chooses one network type" multipleTypes.assertions
-    "exactly one of wireguard, localhost, lan, or isolated must be set"
+  (checks.expectAssertionMessage "wireguard type requires private key"
+    missingWireguardConfig.assertions
+    "wireguard requires privateKeyFile"
   )
   (checks.expectAssertionMessage "wireguard addresses must use CIDR" wgInvalidAddress.assertions
     "wireguard address entries must be in CIDR notation"
@@ -534,13 +442,5 @@ checks.mkCheck "test-cloister-netns" [
   (checks.expectAssertionMessage "wireguard peer endpoint sources are exclusive"
     peerEndpointConflict.assertions
     "endpoint and endpointFile are mutually exclusive"
-  )
-  (checks.expectAssertionMessage "duplicate host addresses are rejected"
-    duplicateAddressEval.assertions
-    "duplicate host addresses across namespaces"
-  )
-  (checks.expectAssertionMessage "duplicate namespace addresses are rejected"
-    duplicateAddressEval.assertions
-    "duplicate namespace addresses across namespaces"
   )
 ]

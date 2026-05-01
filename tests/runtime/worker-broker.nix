@@ -139,7 +139,10 @@ pkgs.testers.runNixOSTest (_: {
         extraGroups = [ "cloister-netns" ];
       };
 
-      cloister-netns.networks.dev.localhost.allowedPorts = [ 4001 ];
+      cloister-netns.networks.dev = {
+        type = "localhost";
+        allowedPorts = [ 4001 ];
+      };
 
       systemd.services.localhost-http = {
         description = "HTTP server for worker broker netns runtime test";
@@ -237,7 +240,7 @@ pkgs.testers.runNixOSTest (_: {
         machine,
         tester_shell
         + "'cd ${projectDir} && ${devPackage}/bin/cl-dev -c ${fixture}/bin/cloister-worker-broker-fixture parent-netns-route'",
-        "default via 172.30.0.1 dev veth-dev-ns",
+        "default via 172.29.0.1 dev veth-dev-ns",
         "worker broker launches worker through host netns helper",
     )
     assert_contains(
