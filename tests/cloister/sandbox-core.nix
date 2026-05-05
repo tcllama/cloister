@@ -448,6 +448,42 @@ let
     };
   };
 
+  sandboxHomeManagerXdgSource = pkgs.writeText "sandbox-hm-xdg" "sandbox = true\n";
+  sandboxHomeManagerHomeSource = pkgs.writeText "sandbox-hm-home" "sandbox home file\n";
+
+  sandboxHomeManagerEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.dev.homeManager = {
+        enable = true;
+        config = {
+          home = {
+            homeDirectory = "/home/tester";
+            packages = [ pkgs.jq ];
+            file.".toolrc".source = sandboxHomeManagerHomeSource;
+            file."wrong-home-name" = {
+              source = sandboxHomeManagerHomeSource;
+              target = ".tool-target";
+            };
+            file."disabled-home" = {
+              source = sandboxHomeManagerHomeSource;
+              enable = false;
+            };
+          };
+          xdg.configFile."tool/config.toml".source = sandboxHomeManagerXdgSource;
+          xdg.configFile."wrong-xdg-name" = {
+            source = sandboxHomeManagerXdgSource;
+            target = "tool/target.toml";
+          };
+          xdg.configFile."disabled-xdg" = {
+            source = sandboxHomeManagerXdgSource;
+            enable = false;
+          };
+        };
+      };
+    };
+  };
+
   copyOutsideHome = hm {
     cloister = {
       enable = true;
@@ -483,6 +519,8 @@ let
   strictHomePolicyConfig = strictHomePolicyEval.config.cloister._internal.sandboxConfigs.dev;
   emptyPerDirBucketConfig = emptyPerDirBucketEval.config.cloister._internal.sandboxConfigs.dev;
   gitConfig = gitEval.config.cloister._internal.sandboxConfigs.dev;
+  sandboxHomeManagerConfig = sandboxHomeManagerEval.config.cloister._internal.sandboxConfigs.dev;
+  sandboxHomeManagerJson = builtins.toJSON sandboxHomeManagerConfig;
   emptyPerDirBucketFailures = builtins.filter (a: !a.assertion) emptyPerDirBucketEval.assertions;
 
   getBind = src: builtins.head (builtins.filter (bind: bind.src == src) bindMatrix);
@@ -576,6 +614,42 @@ checks.mkCheck "test-cloister-sandbox-core" [
   (checks.expectContains "explicit managed file bind renders store source"
     (builtins.unsafeDiscardStringContext (toString managedXdgSource))
     explicitManagedFileBindStateJson
+  )
+  (checks.expectContains "sandbox home-manager xdg config is bound inside sandbox"
+    ''"/home/tester/.config/tool/config.toml"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectContains "sandbox home-manager home.file is bound inside sandbox"
+    ''"/home/tester/.toolrc"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectContains "sandbox home-manager xdg target is honored"
+    ''"/home/tester/.config/tool/target.toml"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectContains "sandbox home-manager home.file target is honored"
+    ''"/home/tester/.tool-target"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectNotContains "sandbox home-manager disabled xdg file is skipped"
+    ''"/home/tester/.config/disabled-xdg"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectNotContains "sandbox home-manager disabled home.file is skipped"
+    ''"/home/tester/disabled-home"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectNotContains "sandbox home-manager xdg source name is not used when target is set"
+    ''"/home/tester/.config/wrong-xdg-name"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectNotContains "sandbox home-manager home source name is not used when target is set"
+    ''"/home/tester/wrong-home-name"''
+    sandboxHomeManagerJson
+  )
+  (checks.expectContains "sandbox home-manager package is added to PATH"
+    (builtins.unsafeDiscardStringContext "${pkgs.jq}/bin")
+    sandboxHomeManagerJson
   )
   (checks.expectContains "sandbox symlink renders target" ''".config"'' symlinkStaticArgs)
   (checks.expectContains "sandbox symlink renders home-relative link" ''"/home/tester/.ssh/config"''

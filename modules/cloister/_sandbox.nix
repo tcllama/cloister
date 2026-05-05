@@ -275,7 +275,32 @@ let
           ''
       );
 
-      allPackages = sCfg._basePackages ++ sCfg.extraPackages;
+      sandboxHomeManagerConfig =
+        if !sCfg.homeManager.enable then
+          null
+        else if sCfg.homeManager.config != null then
+          sCfg.homeManager.config
+        else if cfg.homeManager.builder != null then
+          (cfg.homeManager.builder {
+            inherit pkgs;
+            modules = [
+              {
+                home.username = lib.mkDefault config.home.username;
+                home.homeDirectory = lib.mkDefault config.home.homeDirectory;
+                home.stateVersion = lib.mkDefault config.home.stateVersion;
+              }
+            ]
+            ++ sCfg.homeManager.modules;
+            inherit (sCfg.homeManager) extraSpecialArgs;
+          }).config
+        else
+          throw "cloister.sandboxes.${name}.homeManager.modules requires cloister.homeManager.builder = inputs.home-manager.lib.homeManagerConfiguration, or homeManager.config";
+
+      sandboxHomeManagerPackages = lib.optionals (
+        sCfg.homeManager.enable && sCfg.homeManager.includePackages && sandboxHomeManagerConfig ? home
+      ) (sandboxHomeManagerConfig.home.packages or [ ]);
+
+      allPackages = sCfg._basePackages ++ sCfg.extraPackages ++ sandboxHomeManagerPackages;
 
       computedEnv = {
         PATH = lib.makeBinPath allPackages;
@@ -590,13 +615,45 @@ let
       managedFileHome = if anonymize then sandboxHome else config.home.homeDirectory;
       resolvedManagedFileBinds = lib.concatMap resolveConfigEntry managedKeys;
       explicitManagedFileBinds = lib.concatMap resolveExplicitManagedBind explicitManagedEntries;
+      sandboxHomeManagerFileBinds =
+        let
+          hmCfg = sandboxHomeManagerConfig;
+          hmHomeDir = hmCfg.home.homeDirectory or config.home.homeDirectory;
+          xdgFiles = lib.filterAttrs (_: entry: entry.enable or true) (hmCfg.xdg.configFile or { });
+          homeFiles = lib.filterAttrs (_: entry: entry.enable or true) (hmCfg.home.file or { });
+          normalizeHomeFileName =
+            fileName:
+            if lib.hasPrefix "/" fileName then
+              if lib.hasPrefix "${hmHomeDir}/" fileName then
+                lib.removePrefix "${hmHomeDir}/" fileName
+              else
+                throw "cloister.sandboxes.${name}.homeManager: home.file entry '${fileName}' is outside home.homeDirectory and cannot be mounted inside the sandbox home"
+            else
+              fileName;
+          entryTarget =
+            fileName: entry: if entry ? target && entry.target != null then entry.target else fileName;
+          xdgDest = fileName: entry: "$HOME/.config/${entryTarget fileName entry}";
+          homeDest = fileName: entry: "$HOME/${normalizeHomeFileName (entryTarget fileName entry)}";
+        in
+        lib.optionals (sCfg.homeManager.enable && sCfg.homeManager.includeFiles) (
+          (lib.mapAttrsToList (fileName: entry: {
+            src = toString entry.source;
+            dest = xdgDest fileName entry;
+            try = false;
+          }) xdgFiles)
+          ++ (lib.mapAttrsToList (fileName: entry: {
+            src = toString entry.source;
+            dest = homeDest fileName entry;
+            try = false;
+          }) homeFiles)
+        );
       managedFileBinds = map (
         bind:
         bind
         // {
           dest = builtins.replaceStrings [ "$HOME" ] [ managedFileHome ] bind.dest;
         }
-      ) (resolvedManagedFileBinds ++ explicitManagedFileBinds);
+      ) (resolvedManagedFileBinds ++ explicitManagedFileBinds ++ sandboxHomeManagerFileBinds);
       managedFileDirs = lib.unique (map (bind: builtins.dirOf bind.dest) managedFileBinds);
 
       # Partition managedFileBinds: binds whose dest falls inside a

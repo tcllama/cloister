@@ -218,7 +218,7 @@ CLOISTER_DIR=/path/to/project cl-dev
 - **Shell choice** - zsh or bash as the interactive shell
 - **Network control** - full network, no network, or routed through a VPN namespace
 - **State persistence** - bind mount categories for caches, config, volume-backed storage, and per-directory isolation across multiple host roots
-- **Home-manager integration** - bind Nix store-backed config files directly into the sandbox
+- **Home-manager integration** - bind Nix store-backed config files directly into the sandbox, or evaluate sandbox-local Home Manager profiles for files and packages
 - **Wayland forwarding** - with `wp-security-context-v1` to filter privileged protocols
 - **PipeWire / PulseAudio** - audio with optional per-sandbox device filtering via WirePlumber
 - **D-Bus notifications** - per-sandbox filtered proxy with configurable policies
@@ -264,6 +264,7 @@ This is a quick map of the user-facing options most people edit first. For the f
 |--------|---------|---------|
 | `cloister.enable` | `false` | Enable the Home Manager integration. |
 | `cloister.defaultShell` | `"zsh"` | Choose the default sandbox shell (`"zsh"` or `"bash"`). |
+| `cloister.homeManager.builder` | `null` | Home Manager builder used for sandbox-local Home Manager module lists. |
 | `cloister.sandboxes.<name>` | `{ }` | Define a sandbox; each name generates a `cl-<name>` wrapper. |
 | `cloister-diagnostics` package | not installed | Install validator helpers for Wayland, D-Bus, seccomp, and PipeWire. |
 
@@ -279,6 +280,7 @@ All options in this table are set under `cloister.sandboxes.<name>`, for example
 | `extraPackages` | `[ ]` | Add packages to the sandbox `PATH`. |
 | `git.enable` | `false` | Expose host git config where needed. |
 | `gui.*` | disabled | Enable Wayland, fonts, themes, extra GUI packages, and desktop entries. |
+| `homeManager.*` | disabled | Evaluate a sandbox-local Home Manager profile and consume only files and packages. |
 | `init.text` | `""` | Source custom shell code inside the sandbox at startup. |
 | `network.enable` | `true` | Share host networking; set to `false` for no network access. |
 | `network.namespace` | `null` | Enter a named network namespace instead of the host network. |
@@ -320,6 +322,7 @@ These host-level options are exposed by Cloister's optional NixOS modules.
 For deep details, use these docs in roughly this order:
 
 - **[Configuration & Options Reference](docs/configuration.md)** - full per-option reference and common configuration patterns
+- **[Sandbox-local Home Manager Profiles](docs/home-manager.md)** - use Home Manager modules to generate sandbox-only files and packages
 - **[Sandbox Presets](docs/presets.md)** - which preset to start from for each trust level or app type
 - **[Diagnostics](docs/diagnostics.md)** - first stop when setup, GUI, D-Bus, or audio forwarding does not behave as expected
 - **[Security Model](docs/security.md)** - threat model and isolation boundaries

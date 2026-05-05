@@ -11,6 +11,16 @@ let
         type = lib.types.lines;
         default = "";
       };
+
+      target = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+      };
+
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+      };
     };
   };
 
@@ -36,6 +46,11 @@ let
         packages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
           default = [ ];
+        };
+
+        stateVersion = lib.mkOption {
+          type = lib.types.str;
+          default = "25.05";
         };
 
         file = lib.mkOption {

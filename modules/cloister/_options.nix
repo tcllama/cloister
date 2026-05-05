@@ -328,6 +328,48 @@ let
     in
     {
       options = {
+        homeManager = {
+          enable = lib.mkEnableOption "sandbox-local Home Manager profile";
+
+          modules = lib.mkOption {
+            type = lib.types.listOf lib.types.deferredModule;
+            default = [ ];
+            description = ''
+              Home Manager modules to evaluate for this sandbox only. Cloister
+              consumes only home.packages, xdg.configFile, and home.file from
+              the resulting configuration and never runs activation scripts.
+            '';
+          };
+
+          extraSpecialArgs = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = { };
+            description = "Extra specialArgs passed to the nested Home Manager evaluation.";
+          };
+
+          config = lib.mkOption {
+            type = lib.types.nullOr lib.types.attrs;
+            default = null;
+            description = ''
+              Pre-evaluated Home Manager config to consume for this sandbox.
+              This is useful when the sandbox profile is defined as a separate
+              homeConfigurations entry. When set, modules are ignored.
+            '';
+          };
+
+          includeFiles = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Bind xdg.configFile and home.file entries from the sandbox Home Manager profile.";
+          };
+
+          includePackages = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Append home.packages from the sandbox Home Manager profile to the sandbox PATH.";
+          };
+        };
+
         _basePackages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
           internal = true;
@@ -1365,6 +1407,16 @@ in
       default = { };
       internal = true;
       description = "Internal rendered sandbox helper data consumed by tests.";
+    };
+
+    homeManager.builder = lib.mkOption {
+      type = lib.types.nullOr lib.types.raw;
+      default = null;
+      description = ''
+        Function used to evaluate sandbox-local Home Manager module lists.
+        Set this to inputs.home-manager.lib.homeManagerConfiguration when using
+        cloister.sandboxes.<name>.homeManager.modules.
+      '';
     };
 
     defaultShell = lib.mkOption {

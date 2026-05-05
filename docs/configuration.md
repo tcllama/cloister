@@ -345,6 +345,8 @@ cloister.sandboxes.dev.sandbox.managed = [
 ];
 ```
 
+For sandbox-only Home Manager profiles that generate files and packages without managing the host, see [Sandbox-local Home Manager Profiles](home-manager.md).
+
 ### Explicit store-backed managed files
 
 If you want to bind files directly from the Nix store without managing them in Home Manager, use attr-form `sandbox.managed` entries:
@@ -733,6 +735,7 @@ See the sections above for usage examples and explanations.
 |--------|------|---------|---------|
 | `cloister.enable` | bool | `false` | Gate the entire module |
 | `cloister.defaultShell` | enum | `"zsh"` | Default interactive shell for sandboxes (`"zsh"` or `"bash"`) |
+| `cloister.homeManager.builder` | nullOr function | `null` | Home Manager evaluation function for sandbox-local `homeManager.modules` profiles |
 
 ## NixOS host options (`cloister.imageStore.*`)
 
@@ -750,6 +753,11 @@ See the sections above for usage examples and explanations.
 |--------|------|---------|---------|
 | `defaultCommand` | nullOr (listOf str) | `null` | Default command prefix used when invoked without args, or when appending positional args |
 | `extraPackages` | list of package | `[]` | Additional packages appended to the internally managed base PATH |
+| `homeManager.enable` | bool | `false` | Evaluate a sandbox-local Home Manager profile and consume only files/packages |
+| `homeManager.modules` | list of module | `[]` | Home Manager modules evaluated for this sandbox when `cloister.homeManager.builder` is set |
+| `homeManager.config` | nullOr attrs | `null` | Pre-evaluated Home Manager config to consume instead of `homeManager.modules` |
+| `homeManager.includeFiles` | bool | `true` | Bind `xdg.configFile` and `home.file` entries from the sandbox profile |
+| `homeManager.includePackages` | bool | `true` | Add `home.packages` from the sandbox profile to the sandbox PATH |
 | `preset` | nullOr enum | `null` | Apply one of `hardened`, `developer`, `gui`, or `chromium` default profiles |
 | `shell.name` | enum | `cloister.defaultShell` | Interactive shell (`"zsh"` or `"bash"`) |
 | `shell.hostConfig` | bool | `false` | Bind host shell config files into the sandbox |

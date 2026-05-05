@@ -9,6 +9,15 @@
 #  nvim flake.nix                        # same, via host-side command wrapping
 #
 { config, pkgs, ... }:
+let
+  sandboxStarshipConfig = pkgs.writeText "cloister-nixdev-starship.toml" ''
+    add_newline = false
+
+    [character]
+    success_symbol = "[λ](bold green)"
+    error_symbol = "[λ](bold red)"
+  '';
+in
 {
   cloister.sandboxes.nixdev = {
     shell = {
@@ -34,6 +43,22 @@
       tree
       delta # git diff pager
     ];
+
+    # Sandbox-local Home Manager profile outputs. These files and packages are
+    # only consumed by Cloister: no host activation scripts are run and nothing
+    # is linked into the real home directory.
+    homeManager = {
+      enable = true;
+      config = {
+        home.packages = with pkgs; [
+          bat
+          direnv
+          starship
+        ];
+
+        xdg.configFile."starship.toml".source = sandboxStarshipConfig;
+      };
+    };
 
     # Network (needed for flake fetches and nix build)
     network.enable = true;
