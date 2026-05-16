@@ -195,23 +195,7 @@ let
     let
       shellLib = shells.${sCfg.shell.name};
       guiEnabled = sCfg.gui.enable;
-      # --- Anonymization ---
-      anonymize = sCfg.sandbox.anonymize.enable;
-      sandboxHome = "/home/${sCfg.sandbox.anonymize.username}";
-
-      # Transform bind destinations: replace $HOME with sandbox home
-      remapBind =
-        bind:
-        if !anonymize then
-          bind
-        else
-          let
-            effectiveDest = if bind.dest != null then bind.dest else bind.src;
-            newDest = builtins.replaceStrings [ "$HOME" ] [ sandboxHome ] effectiveDest;
-          in
-          bind // { dest = if newDest == bind.src then null else newDest; };
-
-      remapBinds = map remapBind;
+      subsetPid = sCfg.sandbox."subset-pid";
 
       flatpakAppId = "dev.cloister.${name}";
 
@@ -330,9 +314,7 @@ let
         ${pipewireContextProperties}
       '';
 
-      customShellDest = "${
-        if anonymize then sandboxHome else config.home.homeDirectory
-      }/.config/cl-shell/${name}/custom";
+      customShellDest = "${config.home.homeDirectory}/.config/cl-shell/${name}/custom";
       customShellBinds =
         let
           mkCustomBind = destName: srcPath: {
@@ -377,15 +359,15 @@ let
         "/etc/ssl/certs"
       ]
       ++ lib.optionals (customShellBinds != [ ]) [
-        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/cl-shell/${name}"
+        "${config.home.homeDirectory}/.config/cl-shell/${name}"
       ]
       ++ lib.optionals fileChooserPortalEnabled [
         "/run/flatpak"
         "/run/flatpak/doc"
       ]
       ++ lib.optionals pipewireNativeEnabled [
-        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/pipewire"
-        "${if anonymize then sandboxHome else config.home.homeDirectory}/.config/pipewire/client.conf.d"
+        "${config.home.homeDirectory}/.config/pipewire"
+        "${config.home.homeDirectory}/.config/pipewire/client.conf.d"
       ];
 
       internalTmpfs = [ "/tmp" ];
@@ -420,72 +402,61 @@ let
       ++ lib.optionals pipewireNativeEnabled [
         {
           target = "${pipewireClientConf}";
-          link = "${
-            if anonymize then sandboxHome else config.home.homeDirectory
-          }/.config/pipewire/client.conf.d/99-cloister.conf";
+          link = "${config.home.homeDirectory}/.config/pipewire/client.conf.d/99-cloister.conf";
         }
       ];
 
-      internalRoBinds =
-        lib.filter (b: !(anonymize && (b.src == "/etc/passwd" || b.src == "/etc/group"))) [
-          (mkInternalBind { src = "/etc/passwd"; })
-          (mkInternalBind { src = "/etc/group"; })
-          (mkInternalBind {
-            src = "/etc/shells";
-            try = true;
-          })
-          (mkInternalBind (
-            if sCfg.network.namespace != null then
-              {
-                src = "/etc/netns/${sCfg.network.namespace}/hosts";
-                dest = "/etc/hosts";
-                try = true;
-              }
-            else
-              {
-                src = "/etc/hosts";
-                try = true;
-              }
-          ))
-          (mkInternalBind (
-            if sCfg.network.namespace != null then
-              {
-                src = "/etc/netns/${sCfg.network.namespace}/resolv.conf";
-                dest = "/etc/resolv.conf";
-                try = true;
-              }
-            else
-              {
-                src = "/etc/resolv.conf";
-                try = true;
-              }
-          ))
-          (mkInternalBind {
-            src = "/etc/ssh/ssh_known_hosts";
-            try = true;
-          })
-          (mkInternalBind {
-            src = "/etc/nix/nix.conf";
-            try = true;
-          })
-          (mkInternalBind (
-            if anonymize then
-              {
-                src = "${pkgs.tzdata}/share/zoneinfo/UTC";
-                dest = "/etc/localtime";
-              }
-            else
-              {
-                src = "/etc/localtime";
-                try = true;
-              }
-          ))
-          (mkInternalBind {
-            src = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-            dest = "/etc/ssl/certs/ca-bundle.crt";
-          })
-        ]
-        ++ customShellBinds;
+      internalRoBinds = [
+        (mkInternalBind { src = "/etc/passwd"; })
+        (mkInternalBind { src = "/etc/group"; })
+        (mkInternalBind {
+          src = "/etc/shells";
+          try = true;
+        })
+        (mkInternalBind (
+          if sCfg.network.namespace != null then
+            {
+              src = "/etc/netns/${sCfg.network.namespace}/hosts";
+              dest = "/etc/hosts";
+              try = true;
+            }
+          else
+            {
+              src = "/etc/hosts";
+              try = true;
+            }
+        ))
+        (mkInternalBind (
+          if sCfg.network.namespace != null then
+            {
+              src = "/etc/netns/${sCfg.network.namespace}/resolv.conf";
+              dest = "/etc/resolv.conf";
+              try = true;
+            }
+          else
+            {
+              src = "/etc/resolv.conf";
+              try = true;
+            }
+        ))
+        (mkInternalBind {
+          src = "/etc/ssh/ssh_known_hosts";
+          try = true;
+        })
+        (mkInternalBind {
+          src = "/etc/nix/nix.conf";
+          try = true;
+        })
+        (mkInternalBind {
+          src = "/etc/localtime";
+          try = true;
+        })
+        (mkInternalBind {
+          src = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          dest = "/etc/ssl/certs/ca-bundle.crt";
+        })
+      ]
+      ++ customShellBinds;
 
       # --- Resolution: convert semantic buckets → [{src, dest, try}] ---
 
@@ -581,7 +552,7 @@ let
         }
       ) sCfg.sandbox.copies;
 
-      symlinkHome = if anonymize then sandboxHome else config.home.homeDirectory;
+      symlinkHome = config.home.homeDirectory;
       normalizeSymlinkPath =
         path:
         if path == "$HOME" then
@@ -610,9 +581,7 @@ let
       resolvedExtraRo = userRoBinds;
       resolvedExtraRw = userRwBinds ++ dirBinds ++ fileBinds ++ perDirBinds ++ copyFileBinds;
 
-      # Resolve $HOME in managed file dests to the correct sandbox-side home
-      # directory at eval time, so they work with both anonymize on and off.
-      managedFileHome = if anonymize then sandboxHome else config.home.homeDirectory;
+      managedFileHome = config.home.homeDirectory;
       resolvedManagedFileBinds = lib.concatMap resolveConfigEntry managedKeys;
       explicitManagedFileBinds = lib.concatMap resolveExplicitManagedBind explicitManagedEntries;
       sandboxHomeManagerFileBinds =
@@ -805,7 +774,7 @@ let
       sandboxDirBinds = lib.optionals sCfg.sandbox.bindWorkingDirectory [
         {
           src = "$SANDBOX_DIR";
-          dest = if anonymize then "$SANDBOX_DEST" else null;
+          dest = null;
           try = false;
         }
       ];
@@ -870,20 +839,18 @@ let
           path;
 
       allDests = map (p: normalizeDest (getDest p)) (
-        remapBinds (
-          internalRoBinds
-          ++ resolvedExtraRo
-          ++ managedFileBinds
-          ++ dbusBinds
-          ++ gitBinds
-          ++ guiBinds
-          ++ shellConfigManagedFileBinds
-          ++ shellConfigHostBinds
-          ++ noHostConfigBinds
-          ++ resolvedExtraRw
-          ++ sandboxDirBinds
-          ++ portalRwBinds
-        )
+        internalRoBinds
+        ++ resolvedExtraRo
+        ++ managedFileBinds
+        ++ dbusBinds
+        ++ gitBinds
+        ++ guiBinds
+        ++ shellConfigManagedFileBinds
+        ++ shellConfigHostBinds
+        ++ noHostConfigBinds
+        ++ resolvedExtraRw
+        ++ sandboxDirBinds
+        ++ portalRwBinds
         ++ portalRoBinds
       );
 
@@ -1073,20 +1040,18 @@ let
 
       # Static binds: fully resolved at Nix eval time
       staticRoBinds = builtins.filter isStaticBind (
-        remapBinds (
-          internalRoBinds
-          ++ managedFileBindsNonOverlapping
-          ++ guiBinds
-          ++ shellConfigHostBinds
-          ++ shellConfigManagedFileBinds
-          ++ resolvedExtraRo
-          ++ dbusBinds
-          ++ gitBinds
-          ++ noHostConfigBinds
-        )
+        internalRoBinds
+        ++ managedFileBindsNonOverlapping
+        ++ guiBinds
+        ++ shellConfigHostBinds
+        ++ shellConfigManagedFileBinds
+        ++ resolvedExtraRo
+        ++ dbusBinds
+        ++ gitBinds
+        ++ noHostConfigBinds
       );
 
-      staticRwBinds = builtins.filter isStaticBind (remapBinds (resolvedExtraRw ++ sandboxDirBinds));
+      staticRwBinds = builtins.filter isStaticBind (resolvedExtraRw ++ sandboxDirBinds);
 
       # Dynamic binds: need runtime variable substitution
       mkDynamicBind =
@@ -1101,20 +1066,18 @@ let
         };
 
       dynamicRoBinds = builtins.filter (b: !isStaticBind b) (
-        remapBinds (
-          resolvedExtraRo
-          ++ guiBinds
-          ++ dbusBinds
-          ++ gitBinds
-          ++ portalRoBinds
-          ++ shellConfigHostBinds
-          ++ shellConfigManagedFileBinds
-          ++ noHostConfigBinds
-        )
+        resolvedExtraRo
+        ++ guiBinds
+        ++ dbusBinds
+        ++ gitBinds
+        ++ portalRoBinds
+        ++ shellConfigHostBinds
+        ++ shellConfigManagedFileBinds
+        ++ noHostConfigBinds
       );
 
       dynamicRwBinds = builtins.filter (b: !isStaticBind b) (
-        remapBinds (resolvedExtraRw ++ sandboxDirBinds ++ portalRwBinds)
+        resolvedExtraRw ++ sandboxDirBinds ++ portalRwBinds
       );
 
       dynamicBindsList =
@@ -1163,8 +1126,7 @@ let
           sCfg
           config
           shellLib
-          anonymize
-          sandboxHome
+          subsetPid
           seccompFilter
           allDirs
           internalTmpfs
@@ -1254,32 +1216,11 @@ in
           ++ lib.optional filters.audioIn "Audio/Source"
           ++ lib.optional filters.videoIn "Video/Source";
 
-        mkPipewireSocketEntry =
-          name: sCfg:
-          let
-            sandboxHome = "/home/${sCfg.sandbox.anonymize.username}";
-            anonymizedIdentity =
-              let
-                match = builtins.match "^/home/([^/]+)$" sandboxHome;
-              in
-              if match == null then
-                throw ''
-                  cloister.sandboxes.${name}: anonymized sandboxHome must be exactly /home/<username>, got ${sandboxHome}
-                ''
-              else
-                builtins.elemAt match 0;
-            anonymizedPipewireProps = lib.optionalString sCfg.sandbox.anonymize.enable ''
-              props = {
-                "context.user-name" = "${anonymizedIdentity}"
-                "context.host-name" = "${anonymizedIdentity}"
-              }
-            '';
-          in
-          ''
-              {
-                name = "cloister/pipewire/${name}"
-            ${anonymizedPipewireProps}    }
-          '';
+        mkPipewireSocketEntry = name: _sCfg: ''
+          {
+            name = "cloister/pipewire/${name}"
+          }
+        '';
 
         pipewireSocketEntries = lib.concatMapStrings (
           name: mkPipewireSocketEntry name pipewireEnabledSandboxes.${name}

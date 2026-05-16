@@ -68,11 +68,14 @@ mod tests {
     fn handles_overlapping_var_names() {
         let mut vars = HashMap::new();
         vars.insert("HOME".to_string(), "/home/user".to_string());
-        vars.insert("SANDBOX_HOME".to_string(), "/home/ubuntu".to_string());
+        vars.insert(
+            "HOST_XDG_RUNTIME_DIR".to_string(),
+            "/run/user/1000".to_string(),
+        );
 
         assert_eq!(
-            expand_vars("$SANDBOX_HOME/.cache:$HOME/.cache", &vars),
-            "/home/ubuntu/.cache:/home/user/.cache"
+            expand_vars("$HOST_XDG_RUNTIME_DIR/socket:$HOME/.cache", &vars),
+            "/run/user/1000/socket:/home/user/.cache"
         );
     }
 

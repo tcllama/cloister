@@ -78,9 +78,7 @@ Filtered PipeWire sockets are scoped per sandbox (for example, `cloister/pipewir
 
 ## Anonymized audio sandboxes
 
-When `sandbox.anonymize.enable = true` is also set, Cloister does not allow exposing a native PipeWire socket inside the sandbox. Nix evaluation fails if `audio.pipewire.enable = true` is combined with anonymization without also setting `audio.pipewire.pulseOnly = true`.
-
-For anonymized audio sandboxes, `pulseOnly` launches `pipewire-pulse` inside a transient helper bubblewrap with a synthetic hostname and passwd/group view, then forwards only that helper's `pulse/native` socket into the final sandbox.
+`pulseOnly` launches `pipewire-pulse` as a helper and forwards only that helper's `pulse/native` socket into the final sandbox.
 
 ## Validation
 

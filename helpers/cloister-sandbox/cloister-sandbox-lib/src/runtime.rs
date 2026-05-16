@@ -63,22 +63,6 @@ pub fn compute_start_dir(sandbox_dir: &str) -> String {
     }
 }
 
-/// Compute anonymized path remapping: if path is under $HOME, remap to $SANDBOX_HOME.
-pub fn remap_path_for_anonymize(path: &str, home: &str, sandbox_home: &str) -> String {
-    let path = Path::new(path);
-    let home = Path::new(home);
-    if let Ok(suffix) = path.strip_prefix(home) {
-        if suffix.as_os_str().is_empty() {
-            return sandbox_home.to_string();
-        }
-        let mut remapped = PathBuf::from(sandbox_home);
-        remapped.push(suffix);
-        remapped.to_string_lossy().to_string()
-    } else {
-        path.to_string_lossy().to_string()
-    }
-}
-
 /// Compute a stable 20-character hex hash of a sandbox directory path.
 /// Used for per-directory state isolation.
 pub fn compute_dir_hash(sandbox_dir: &str) -> String {
@@ -373,7 +357,6 @@ pub fn copy_file(
 /// Build the runtime variable map for path substitution.
 pub fn build_runtime_vars(
     home: &str,
-    sandbox_home: &str,
     sandbox_dir: &str,
     sandbox_dest: &str,
     dir_hash: &str,
@@ -382,7 +365,6 @@ pub fn build_runtime_vars(
 ) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     vars.insert("HOME".to_string(), home.to_string());
-    vars.insert("SANDBOX_HOME".to_string(), sandbox_home.to_string());
     vars.insert("SANDBOX_DIR".to_string(), sandbox_dir.to_string());
     vars.insert("SANDBOX_DEST".to_string(), sandbox_dest.to_string());
     vars.insert("DIR_HASH".to_string(), dir_hash.to_string());
@@ -579,7 +561,6 @@ mod tests {
     fn build_runtime_vars_keeps_host_and_sandbox_runtime_dirs_distinct() {
         let vars = build_runtime_vars(
             "/home/user",
-            "/home/sandbox",
             "/work/tree",
             "/work/tree",
             "dir-hash",
@@ -613,50 +594,6 @@ mod tests {
 
         std::env::set_current_dir(&original).unwrap();
         let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn remap_inside_home() {
-        assert_eq!(
-            remap_path_for_anonymize("/home/user/projects", "/home/user", "/home/ubuntu"),
-            "/home/ubuntu/projects"
-        );
-    }
-
-    #[test]
-    fn remap_outside_home() {
-        assert_eq!(
-            remap_path_for_anonymize("/opt/project", "/home/user", "/home/ubuntu"),
-            "/opt/project"
-        );
-    }
-
-    #[test]
-    fn remap_exact_home() {
-        assert_eq!(
-            remap_path_for_anonymize("/home/user", "/home/user", "/home/ubuntu"),
-            "/home/ubuntu"
-        );
-    }
-
-    #[test]
-    fn remap_does_not_match_prefix_only() {
-        assert_eq!(
-            remap_path_for_anonymize("/home/user2/projects", "/home/user", "/home/ubuntu"),
-            "/home/user2/projects"
-        );
-    }
-
-    #[test]
-    fn remap_handles_trailing_slash() {
-        assert_eq!(
-            remap_path_for_anonymize("/home/user/projects", "/home/user/", "/home/ubuntu"),
-            "/home/ubuntu/projects"
-        );
-        assert_eq!(
-            remap_path_for_anonymize("/home/user/", "/home/user/", "/home/ubuntu"),
-            "/home/ubuntu"
-        );
     }
 
     #[test]

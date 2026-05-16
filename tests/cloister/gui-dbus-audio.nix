@@ -151,21 +151,10 @@ let
     };
   };
 
-  anonymizeNativePipewire = hm {
-    cloister = {
-      enable = true;
-      sandboxes.browser = {
-        sandbox.anonymize.enable = true;
-        audio.pipewire.enable = true;
-      };
-    };
-  };
-
   pulseOnlyEval = hm {
     cloister = {
       enable = true;
       sandboxes.listener = {
-        sandbox.anonymize.enable = true;
         dbus.enable = true;
         audio.pipewire = {
           enable = true;
@@ -400,9 +389,6 @@ let
     (checks.expectContains "pulse-only config blocks volume control by default" "block-sink-volume"
       pulseOnlyInternal.pipewirePulseOnlyConfText
     )
-    (checks.expectContains "pulse-only anonymize rewrites identity" ''"context.user-name" = "ubuntu"''
-      pulseOnlyInternal.pipewirePulseOnlyConfText
-    )
     (checks.expectContains "pulse-only disables dbus support when dbus is off" "support.dbus = false"
       pulseOnlyNoDbusInternal.pipewirePulseOnlyConfText
     )
@@ -421,10 +407,6 @@ let
     (checks.expectAssertionMessage "desktop entry requires default command"
       desktopWithoutCommand.assertions
       "gui.desktopEntry requires defaultCommand to be set"
-    )
-    (checks.expectAssertionMessage "anonymize rejects native pipewire"
-      anonymizeNativePipewire.assertions
-      "it is not possible to anonymize a PipeWire socket"
     )
     (checks.expectAssertionMessage "desktop entry execArgs rejects metacharacters"
       invalidDesktopExecArgs.assertions

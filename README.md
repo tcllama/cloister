@@ -286,7 +286,7 @@ All options in this table are set under `cloister.sandboxes.<name>`, for example
 | `network.namespace` | `null` | Enter a named network namespace instead of the host network. |
 | `preset` | `null` | Start from `hardened`, `developer`, `gui`, or `chromium` defaults. |
 | `registry.*` | empty | Create aliases, functions, command wrappers, and interactive wrappers. |
-| `sandbox.anonymize.*` | disabled | Present a generic username, home directory, hostname, and process view. |
+| `sandbox."subset-pid"` | enabled | Mount procfs with `subset=pid` using Cloister's patched bubblewrap. |
 | `sandbox.bindWorkingDirectory` | `true` | Expose the detected git root or current directory read-write. |
 | `sandbox.copies` | `[ ]` | Copy host files into writable sandbox state without mutating the host originals. |
 | `sandbox.env` | `{ }` | Set fixed environment variables inside the sandbox. |
@@ -326,7 +326,6 @@ For deep details, use these docs in roughly this order:
 - **[Sandbox Presets](docs/presets.md)** - which preset to start from for each trust level or app type
 - **[Diagnostics](docs/diagnostics.md)** - first stop when setup, GUI, D-Bus, or audio forwarding does not behave as expected
 - **[Security Model](docs/security.md)** - threat model and isolation boundaries
-- **[Identity Anonymization](docs/anonymize.md)** - anonymized mode behavior and limits
 - **[Audio](docs/audio.md)** - PipeWire, PulseAudio, filtering, and validation
 - **[D-Bus Proxy](docs/dbus.md)** - per-sandbox D-Bus proxy behavior and policy design
 - **[Image Store](docs/image-store.md)** - immutable `/nix/store` image mode and host-side publishing

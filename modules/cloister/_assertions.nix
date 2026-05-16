@@ -342,9 +342,4 @@ in
     assertion = !(sCfg.audio.pipewire.pulseOnly && sCfg.audio.pipewire.filters.videoIn);
     message = "cloister.sandboxes.${name}: audio.pipewire.pulseOnly is audio-only and does not support audio.pipewire.filters.videoIn.";
   }
-  {
-    assertion =
-      !(sCfg.sandbox.anonymize.enable && sCfg.audio.pipewire.enable && !sCfg.audio.pipewire.pulseOnly);
-    message = "cloister.sandboxes.${name}: it is not possible to anonymize a PipeWire socket. If sandbox.anonymize.enable = true and audio.pipewire.enable = true, you must also enable audio.pipewire.pulseOnly.";
-  }
 ]

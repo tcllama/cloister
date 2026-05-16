@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{DelegatedPerDirMount, WorkspaceMode};
-use crate::runtime;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BrokerSession {
@@ -71,26 +70,17 @@ pub fn validate_capability_session_identity(
         ));
     }
 
-    validate_project_identity(&session.project_root, project_root, &session.dir_hash)
+    validate_project_identity(&session.project_root, project_root)
 }
 
 pub fn validate_project_identity(
     session_project_root: &str,
     requested_project_root: &str,
-    dir_hash: &str,
 ) -> Result<(), String> {
-    if dir_hash.is_empty() {
-        return Err("broker project identity requires a non-empty dir hash".to_string());
-    }
-
     let session_root = normalize_absolute_path(session_project_root)?;
     let requested_root = normalize_absolute_path(requested_project_root)?;
-    let requested_dir_hash =
-        runtime::compute_dir_hash(requested_root.to_str().ok_or_else(|| {
-            format!("project root must be valid UTF-8: {requested_project_root}")
-        })?);
 
-    if session_root == requested_root || requested_dir_hash == dir_hash {
+    if session_root == requested_root {
         Ok(())
     } else {
         Err(format!(

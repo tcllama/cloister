@@ -8,8 +8,7 @@
   sCfg,
   config,
   shellLib,
-  anonymize,
-  sandboxHome,
+  subsetPid,
   seccompFilter,
   allDirs,
   internalTmpfs,
@@ -37,7 +36,7 @@
   osConfig ? null,
 }:
 let
-  bubblewrapPackage = if anonymize then bubblewrap-subset-pid else pkgs.bubblewrap;
+  bubblewrapPackage = if subsetPid then bubblewrap-subset-pid else pkgs.bubblewrap;
 
   storeRootFromEntry =
     entry:
@@ -166,26 +165,8 @@ let
   pipewireBackendSocketName =
     if sCfg.audio.pipewire.pulseOnly then "cloister/pipewire/${name}" else null;
 
-  anonymizedIdentity =
-    if anonymize then
-      let
-        match = builtins.match "^/home/([^/]+)$" sandboxHome;
-      in
-      if match == null then
-        throw ''
-          cloister.sandboxes.${name}: anonymized sandboxHome must be exactly /home/<username>, got ${sandboxHome}
-        ''
-      else
-        builtins.elemAt match 0
-    else
-      null;
-
   pipewirePulseOnlyConfText =
     let
-      anonymizedPulseOnlyProps = lib.optionalString sCfg.sandbox.anonymize.enable ''
-        "context.user-name" = "${anonymizedIdentity}"
-        "context.host-name" = "${anonymizedIdentity}"
-      '';
       pulseOnlyQuirks =
         lib.optional (!sCfg.audio.pipewire.filters.audioOut) "block-playback-stream"
         ++ lib.optional (!sCfg.audio.pipewire.filters.audioIn) "block-record-stream"
@@ -213,7 +194,6 @@ let
           support.dbus = ${
             if (sCfg.dbus.enable && sCfg.audio.pipewire.dbus.enable) then "true" else "false"
           }
-      ${anonymizedPulseOnlyProps}
       }
       context.spa-libs = {
           audio.convert.* = audioconvert/libspa-audioconvert
@@ -355,13 +335,12 @@ let
       store_id = if imageStoreMode then storeId else null;
       store_image_path = if imageStoreMode then storeImagePublishedPath else null;
       store_mount_path = if imageStoreMode then storeMountPath else null;
-      inherit anonymize;
+      subset_pid = subsetPid;
 
       ssh_allow_fingerprints = sCfg.ssh.allowFingerprints;
       ssh_filter_timeout_seconds = sCfg.ssh.filterTimeoutSeconds;
 
       home_directory = config.home.homeDirectory;
-      sandbox_home = if anonymize then sandboxHome else config.home.homeDirectory;
       seccomp_filter_path = if seccompFilter != "" then seccompFilter else null;
       per_dir = perDirBuckets;
       copy_file_base = sCfg.sandbox.copyBase;
@@ -371,12 +350,7 @@ let
       init_path = "${pkgs.tini}/bin/tini";
 
       static_bwrap_args = bwrapLib.mkBwrapArgs {
-        dirs =
-          allDirs
-          ++ (lib.optionals anonymize [
-            "/home"
-            sandboxHome
-          ]);
+        dirs = allDirs;
         tmpfs = internalTmpfs;
         symlinks = allSymlinks;
         binds = {

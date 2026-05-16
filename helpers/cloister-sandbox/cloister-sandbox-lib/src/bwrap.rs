@@ -19,15 +19,6 @@ use nix::unistd::pipe2;
 use crate::config::{BindMode, DelegatedAccessMode, SandboxConfig};
 use crate::vars;
 
-fn anonymized_identity(config: &SandboxConfig) -> io::Result<&str> {
-    config.anonymized_identity().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "anonymized sandbox identity is missing; sandbox_home must end with a username",
-        )
-    })
-}
-
 /// Build the complete bwrap Command from config and runtime state.
 ///
 /// Returns the Command and an `OwnedFd` for the pipe read end that carries
@@ -54,21 +45,6 @@ pub fn build_bwrap_command(
     // Network
     if config.network_enable {
         args.push("--share-net".into());
-    }
-
-    // Anonymization: hostname + uid/gid override
-    if config.anonymize {
-        let uid = unsafe { libc::getuid() };
-        let gid = unsafe { libc::getgid() };
-        let identity = anonymized_identity(config)?;
-        args.extend([
-            "--hostname".to_string(),
-            identity.to_string(),
-            "--uid".to_string(),
-            uid.to_string(),
-            "--gid".to_string(),
-            gid.to_string(),
-        ]);
     }
 
     // Clear environment
@@ -228,24 +204,17 @@ pub fn passthrough_env_args(var_names: &[String]) -> Vec<String> {
 }
 
 /// Build ZDOTDIR forwarding args for zsh sandboxes.
-pub fn zdotdir_args(home: &str, sandbox_home: &str) -> Vec<String> {
+pub fn zdotdir_args(_home: &str) -> Vec<String> {
     let mut args = Vec::new();
     if let Ok(zdotdir) = std::env::var("ZDOTDIR") {
         if !zdotdir.is_empty() {
-            let dest = match std::path::Path::new(&zdotdir).strip_prefix(home) {
-                Ok(suffix) => std::path::Path::new(sandbox_home)
-                    .join(suffix)
-                    .to_string_lossy()
-                    .to_string(),
-                Err(_) => zdotdir.clone(),
-            };
             args.push("--setenv".to_string());
             args.push("ZDOTDIR".to_string());
-            args.push(dest.clone());
+            args.push(zdotdir.clone());
             if std::path::Path::new(&zdotdir).is_dir() {
                 args.push("--ro-bind".to_string());
+                args.push(zdotdir.clone());
                 args.push(zdotdir);
-                args.push(dest);
             }
         }
     }
@@ -332,14 +301,14 @@ mod tests {
     }
 
     #[test]
-    fn zdotdir_remaps_only_under_home() {
+    fn zdotdir_forwards_host_path() {
         let _guard = env_lock().lock().unwrap();
         let original = std::env::var_os("ZDOTDIR");
 
         std::env::set_var("ZDOTDIR", "/home/user/.config/zsh");
-        let args = zdotdir_args("/home/user", "/home/ubuntu");
+        let args = zdotdir_args("/home/user");
         assert!(args.contains(&"ZDOTDIR".to_string()));
-        assert!(args.contains(&"/home/ubuntu/.config/zsh".to_string()));
+        assert!(args.contains(&"/home/user/.config/zsh".to_string()));
 
         if let Some(val) = original {
             std::env::set_var("ZDOTDIR", val);
@@ -354,10 +323,9 @@ mod tests {
         let original = std::env::var_os("ZDOTDIR");
 
         std::env::set_var("ZDOTDIR", "/home/user2/.config/zsh");
-        let args = zdotdir_args("/home/user", "/home/ubuntu");
+        let args = zdotdir_args("/home/user");
         assert!(args.contains(&"ZDOTDIR".to_string()));
         assert!(args.contains(&"/home/user2/.config/zsh".to_string()));
-        assert!(!args.contains(&"/home/ubuntu2/.config/zsh".to_string()));
 
         if let Some(val) = original {
             std::env::set_var("ZDOTDIR", val);
@@ -375,50 +343,12 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "per_dir": {},
             "copy_file_base": "/home/user/.local/state/cloister",
             "git_path": "/nix/store/xxx-git/bin/git",
             "init_path": "/nix/store/xxx-tini/bin/tini",
         });
         serde_json::from_value(json).unwrap()
-    }
-
-    #[test]
-    fn anonymize_uses_configured_identity_for_hostname() {
-        let mut config = minimal_config();
-        config.anonymize = true;
-        config.sandbox_home = "/home/devuser".to_string();
-
-        let vars = HashMap::new();
-        let run_cmd = vec!["echo".to_string(), "hello".to_string()];
-        let (_cmd, args_fd) =
-            build_bwrap_command(&config, &vars, vec![], &run_cmd, "/home/devuser", false)
-                .expect("build_bwrap_command failed");
-        let pipe_args = read_pipe_args(args_fd);
-
-        assert!(
-            pipe_args.windows(2).any(|w| w == ["--hostname", "devuser"]),
-            "expected anonymized hostname to be derived from config"
-        );
-    }
-
-    #[test]
-    fn anonymize_rejects_missing_identity_leaf() {
-        let mut config = minimal_config();
-        config.anonymize = true;
-        config.sandbox_home = "/home/".to_string();
-
-        let vars = HashMap::new();
-        let run_cmd = vec!["echo".to_string()];
-        let err = build_bwrap_command(&config, &vars, vec![], &run_cmd, "/home", false)
-            .expect_err("expected invalid anonymized identity to fail");
-
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(
-            err.to_string()
-                .contains("sandbox_home must end with a username")
-        );
     }
 
     #[test]

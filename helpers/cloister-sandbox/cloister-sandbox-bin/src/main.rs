@@ -327,7 +327,6 @@ struct PulseOnlyBridge {
     child: process::Child,
     runtime_dir: String,
     socket_path: String,
-    anonymize_file_paths: Vec<String>,
 }
 
 struct ProcPrivacyState {
@@ -351,7 +350,6 @@ struct CleanupState {
     wayland_socket: Option<String>,
     machine_id_path: Option<String>,
     proc_privacy_state: Option<ProcPrivacyState>,
-    anonymize_file_paths: Vec<String>,
     flatpak_portal_state: Option<FlatpakPortalState>,
     broker_session_record_path: Option<PathBuf>,
     broker_listener: Option<BrokerListenerHandle>,
@@ -385,119 +383,6 @@ struct ImageStoreMeta {
     mode: String,
     #[serde(rename = "storeId")]
     store_id: String,
-}
-
-fn anonymized_identity(config: &SandboxConfig) -> Result<&str, String> {
-    config.anonymized_identity().ok_or_else(|| {
-        "anonymized sandbox identity is missing; sandbox_home must end with a username".to_string()
-    })
-}
-
-fn pulse_proxy_identity(config: &SandboxConfig) -> Result<&str, String> {
-    anonymized_identity(config)
-}
-
-struct PulseProxyCommand<'a> {
-    runtime_dir: &'a str,
-    pipewire_remote: &'a str,
-    identity: &'a str,
-    passwd_path: Option<&'a str>,
-    group_path: Option<&'a str>,
-    pipewire_pulse_bin: &'a str,
-    pipewire_pulse_conf: &'a str,
-}
-
-fn build_pulse_only_proxy_command(
-    config: &SandboxConfig,
-    proxy: PulseProxyCommand<'_>,
-) -> Result<process::Command, String> {
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-    let uid_str = uid.to_string();
-    let gid_str = gid.to_string();
-    let proxy_home = format!("/home/{}", proxy.identity);
-    let store_bind_args = match config.store_mode {
-        StoreMode::Host => host_store_bind_args(),
-        StoreMode::ImageStore => {
-            image_store_bind_args(config.store_mount_path.as_deref().ok_or_else(|| {
-                "missing store_mount_path for image-store pulse proxy".to_string()
-            })?)
-        }
-    };
-
-    let mut cmd = process::Command::new(&config.bwrap_path);
-    cmd.args([
-        "--die-with-parent",
-        "--new-session",
-        "--unshare-all",
-        "--hostname",
-        proxy.identity,
-        "--uid",
-        &uid_str,
-        "--gid",
-        &gid_str,
-        "--clearenv",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
-        "--dir",
-        "/nix",
-        "--dir",
-        "/nix/store",
-        "--dir",
-        "/home",
-        "--dir",
-        &proxy_home,
-        "--bind",
-        proxy.runtime_dir,
-        proxy.runtime_dir,
-        "--ro-bind",
-        proxy.pipewire_remote,
-        proxy.pipewire_remote,
-        "--ro-bind",
-        proxy.pipewire_pulse_conf,
-        proxy.pipewire_pulse_conf,
-    ]);
-    cmd.args(&store_bind_args);
-
-    if let Some(path) = proxy.passwd_path {
-        cmd.args(["--ro-bind", path, "/etc/passwd"]);
-    }
-    if let Some(path) = proxy.group_path {
-        cmd.args(["--ro-bind", path, "/etc/group"]);
-    }
-
-    cmd.args([
-        "--setenv",
-        "HOME",
-        &proxy_home,
-        "--setenv",
-        "USER",
-        proxy.identity,
-        "--setenv",
-        "LOGNAME",
-        proxy.identity,
-        "--setenv",
-        "XDG_RUNTIME_DIR",
-        proxy.runtime_dir,
-        "--setenv",
-        "PULSE_RUNTIME_PATH",
-        proxy.runtime_dir,
-        "--setenv",
-        "PIPEWIRE_REMOTE",
-        proxy.pipewire_remote,
-        "--chdir",
-        "/",
-        "--",
-        proxy.pipewire_pulse_bin,
-        "-c",
-        proxy.pipewire_pulse_conf,
-    ]);
-
-    Ok(cmd)
 }
 
 fn host_store_bind_args() -> Vec<String> {
@@ -972,46 +857,13 @@ fn start_pulse_only_bridge(
     socket::remove_stale_socket(&socket_path)
         .map_err(|e| format!("{prefix}: pulse-only socket cleanup '{socket_path}': {e}"))?;
 
-    let (anonymize_file_paths, mut child) = if config.anonymize {
-        let identity = pulse_proxy_identity(config)?;
-        let proxy_home = format!("/home/{identity}");
-        let overlays = features::anonymize_identity_args(
-            identity,
-            &config.shell_bin,
-            &proxy_home,
-            config.network_namespace.as_deref(),
-        );
-
-        let passwd_path = overlays.file_paths.first().map(String::as_str);
-        let group_path = overlays.file_paths.get(1).map(String::as_str);
-
-        let mut cmd = build_pulse_only_proxy_command(
-            config,
-            PulseProxyCommand {
-                runtime_dir: &runtime_dir,
-                pipewire_remote: &pipewire_remote,
-                identity,
-                passwd_path,
-                group_path,
-                pipewire_pulse_bin,
-                pipewire_pulse_conf,
-            },
-        )?;
-
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("{prefix}: start anonymized pulse-only proxy: {e}"))?;
-        (overlays.file_paths, child)
-    } else {
-        let child = process::Command::new(pipewire_pulse_bin)
-            .arg("-c")
-            .arg(pipewire_pulse_conf)
-            .env("PIPEWIRE_REMOTE", &pipewire_remote)
-            .env("PULSE_RUNTIME_PATH", &runtime_dir)
-            .spawn()
-            .map_err(|e| format!("{prefix}: start pulse-only pipewire-pulse: {e}"))?;
-        (Vec::new(), child)
-    };
+    let mut child = process::Command::new(pipewire_pulse_bin)
+        .arg("-c")
+        .arg(pipewire_pulse_conf)
+        .env("PIPEWIRE_REMOTE", &pipewire_remote)
+        .env("PULSE_RUNTIME_PATH", &runtime_dir)
+        .spawn()
+        .map_err(|e| format!("{prefix}: start pulse-only pipewire-pulse: {e}"))?;
 
     for _ in 0..50 {
         if Path::new(&socket_path)
@@ -1023,9 +875,6 @@ fn start_pulse_only_bridge(
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = socket::remove_stale_socket(&socket_path);
-                for path in &anonymize_file_paths {
-                    let _ = std::fs::remove_file(path);
-                }
                 return Err(format!(
                     "{prefix}: pulse-only bridge produced invalid socket '{socket_path}': {e}"
                 ));
@@ -1034,7 +883,6 @@ fn start_pulse_only_bridge(
                 child,
                 runtime_dir,
                 socket_path,
-                anonymize_file_paths,
             }));
         }
 
@@ -1042,9 +890,6 @@ fn start_pulse_only_bridge(
             .try_wait()
             .map_err(|e| format!("{prefix}: poll pulse-only pipewire-pulse: {e}"))?
         {
-            for path in &anonymize_file_paths {
-                let _ = std::fs::remove_file(path);
-            }
             let _ = socket::remove_stale_socket(&socket_path);
             return Err(format!(
                 "{prefix}: pulse-only pipewire-pulse exited before creating {socket_path} (status: {status})"
@@ -1057,9 +902,6 @@ fn start_pulse_only_bridge(
     let _ = child.kill();
     let _ = child.wait();
     let _ = socket::remove_stale_socket(&socket_path);
-    for path in &anonymize_file_paths {
-        let _ = std::fs::remove_file(path);
-    }
     Err(format!(
         "{prefix}: timed out waiting for pulse-only socket {socket_path}"
     ))
@@ -1117,19 +959,9 @@ pub fn create_parent_broker_session(
         );
     }
 
-    let child_visible_project_root = if config.anonymize {
-        runtime::remap_path_for_anonymize(
-            project_root,
-            &config.home_directory,
-            &config.sandbox_home,
-        )
-    } else {
-        project_root.to_string()
-    };
-
     Ok(Some(broker::BrokerSession {
         token: broker_parent_capability_token(),
-        project_root: child_visible_project_root,
+        project_root: project_root.to_string(),
         dir_hash: dir_hash.to_string(),
         profiles: config
             .worker_broker
@@ -2145,18 +1977,10 @@ fn run() -> i32 {
             process::exit(1);
         }
 
-        // --- 6. Compute start dir and anonymization ---
+        // --- 6. Compute start dir ---
         let start_dir = runtime::compute_start_dir(&sandbox_dir);
-        let sandbox_dest = if config.anonymize {
-            runtime::remap_path_for_anonymize(&sandbox_dir, &configured_home, &config.sandbox_home)
-        } else {
-            sandbox_dir.clone()
-        };
-        let effective_start_dir = if config.anonymize {
-            runtime::remap_path_for_anonymize(&start_dir, &configured_home, &config.sandbox_home)
-        } else {
-            start_dir
-        };
+        let sandbox_dest = sandbox_dir.clone();
+        let effective_start_dir = start_dir;
 
         // --- 7. Per-dir setup ---
         let dir_hash = dir_hash_for_launch(&config, &sandbox_dir);
@@ -2194,7 +2018,7 @@ fn run() -> i32 {
             String::new(),
             String::new(),
             String::new(),
-            config.sandbox_home.clone(),
+            config.home_directory.clone(),
         )
     };
 
@@ -2244,7 +2068,6 @@ fn run() -> i32 {
     // --- 9. Build bwrap args ---
     let mut runtime_vars = runtime::build_runtime_vars(
         &configured_home,
-        &config.sandbox_home,
         &sandbox_dir,
         &sandbox_dest,
         &dir_hash,
@@ -2400,7 +2223,6 @@ fn run() -> i32 {
                         wayland_socket: None,
                         machine_id_path: None,
                         proc_privacy_state: None,
-                        anonymize_file_paths: Vec::new(),
                         flatpak_portal_state: None,
                         broker_session_record_path,
                         broker_listener: None,
@@ -2431,7 +2253,7 @@ fn run() -> i32 {
 
     // ZDOTDIR (only forward host ZDOTDIR when host shell config is enabled)
     if config.shell_name == "zsh" && config.shell_host_config {
-        extra_args.extend(bwrap::zdotdir_args(&configured_home, &config.sandbox_home));
+        extra_args.extend(bwrap::zdotdir_args(&configured_home));
     }
 
     // SSH
@@ -2564,7 +2386,6 @@ fn run() -> i32 {
                     wayland_socket: None,
                     machine_id_path: None,
                     proc_privacy_state: None,
-                    anonymize_file_paths: Vec::new(),
                     flatpak_portal_state,
                     broker_session_record_path,
                     broker_listener,
@@ -2581,7 +2402,6 @@ fn run() -> i32 {
                     wayland_socket: None,
                     machine_id_path: None,
                     proc_privacy_state: None,
-                    anonymize_file_paths: Vec::new(),
                     flatpak_portal_state,
                     broker_session_record_path,
                     broker_listener,
@@ -2610,7 +2430,6 @@ fn run() -> i32 {
                         wayland_socket: None,
                         machine_id_path: None,
                         proc_privacy_state: None,
-                        anonymize_file_paths: Vec::new(),
                         flatpak_portal_state,
                         broker_session_record_path,
                         broker_listener,
@@ -2640,43 +2459,11 @@ fn run() -> i32 {
     // Device binds
     extra_args.extend(features::dev_bind_args(&config.dev_binds));
 
-    // Anonymized identity (synthetic /etc/passwd + /etc/group with real UID/GID)
-    let anonymize_file_paths = if config.anonymize {
-        let identity = match anonymized_identity(&config) {
-            Ok(identity) => identity,
-            Err(e) => {
-                eprintln!("{prefix}: {e}");
-                process::exit(cleanup_and_exit(CleanupState {
-                    ssh_handle: ssh_filter_handle,
-                    dbus_proxy: None,
-                    pulse_bridge,
-                    wayland_socket: wayland_socket_path,
-                    machine_id_path: None,
-                    proc_privacy_state: None,
-                    anonymize_file_paths: Vec::new(),
-                    flatpak_portal_state,
-                    broker_session_record_path,
-                    broker_listener,
-                }));
-            }
-        };
-        let overlays = features::anonymize_identity_args(
-            identity,
-            &config.shell_bin,
-            &config.sandbox_home,
-            config.network_namespace.as_deref(),
-        );
-        extra_args.extend(overlays.args);
-        overlays.file_paths
-    } else {
-        Vec::new()
-    };
-
     // Machine ID (random per invocation — avoids host fingerprinting)
     let (machine_id_bwrap_args, machine_id_path) = features::machine_id_args();
     extra_args.extend(machine_id_bwrap_args);
 
-    let proc_privacy_state = if config.anonymize {
+    let proc_privacy_state = if config.subset_pid {
         let overlays = features::proc_privacy_args();
         extra_args.extend(overlays.args.clone());
         Some(ProcPrivacyState {
@@ -2704,7 +2491,6 @@ fn run() -> i32 {
                         wayland_socket: wayland_socket_path,
                         machine_id_path,
                         proc_privacy_state,
-                        anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
                         broker_listener,
@@ -2752,7 +2538,6 @@ fn run() -> i32 {
                             wayland_socket: wayland_socket_path,
                             machine_id_path,
                             proc_privacy_state,
-                            anonymize_file_paths,
                             flatpak_portal_state,
                             broker_session_record_path,
                             broker_listener,
@@ -2772,7 +2557,6 @@ fn run() -> i32 {
                         wayland_socket: wayland_socket_path,
                         machine_id_path,
                         proc_privacy_state,
-                        anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
                         broker_listener,
@@ -2819,7 +2603,6 @@ fn run() -> i32 {
                         wayland_socket: wayland_socket_path,
                         machine_id_path,
                         proc_privacy_state,
-                        anonymize_file_paths,
                         flatpak_portal_state,
                         broker_session_record_path,
                         broker_listener,
@@ -2855,7 +2638,6 @@ fn run() -> i32 {
                 wayland_socket: wayland_socket_path,
                 machine_id_path,
                 proc_privacy_state,
-                anonymize_file_paths,
                 flatpak_portal_state,
                 broker_session_record_path,
                 broker_listener,
@@ -2875,7 +2657,6 @@ fn run() -> i32 {
                 wayland_socket: wayland_socket_path,
                 machine_id_path,
                 proc_privacy_state,
-                anonymize_file_paths,
                 flatpak_portal_state,
                 broker_session_record_path,
                 broker_listener,
@@ -2892,7 +2673,6 @@ fn run() -> i32 {
         wayland_socket: wayland_socket_path,
         machine_id_path,
         proc_privacy_state,
-        anonymize_file_paths,
         flatpak_portal_state,
         broker_session_record_path,
         broker_listener,
@@ -2940,7 +2720,6 @@ fn cleanup(state: CleanupState) {
         wayland_socket,
         machine_id_path,
         proc_privacy_state,
-        anonymize_file_paths,
         flatpak_portal_state,
         broker_session_record_path,
         broker_listener,
@@ -2959,9 +2738,6 @@ fn cleanup(state: CleanupState) {
         let _ = bridge.child.wait();
         let _ = socket::remove_stale_socket(&bridge.socket_path);
         let _ = std::fs::remove_dir(&bridge.runtime_dir);
-        for path in bridge.anonymize_file_paths.drain(..) {
-            let _ = std::fs::remove_file(&path);
-        }
     }
 
     // Wayland socket cleanup
@@ -2978,11 +2754,6 @@ fn cleanup(state: CleanupState) {
         for path in state.file_paths {
             let _ = std::fs::remove_file(&path);
         }
-    }
-
-    // Anonymization temp file cleanup
-    for path in anonymize_file_paths {
-        let _ = std::fs::remove_file(&path);
     }
 
     if let Some(state) = flatpak_portal_state {
@@ -3211,7 +2982,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "store_mode": "host",
             "store_roots": ["/nix/store/aaa-shell"],
             "per_dir": {},
@@ -3278,7 +3048,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "store_mode": "host",
             "store_roots": ["/nix/store/aaa-shell"],
             "per_dir": {},
@@ -3407,21 +3176,6 @@ mod tests {
             Some(".cache/pre-commit")
         );
         assert!(!session.token.is_empty());
-    }
-
-    #[test]
-    fn parent_broker_session_uses_child_visible_project_root_under_anonymization() {
-        let mut config = config_with_worker_broker();
-        config.anonymize = true;
-        config.home_directory = "/home/alice".to_string();
-        config.sandbox_home = "/home/ubuntu".to_string();
-
-        let session =
-            create_parent_broker_session(&config, "/home/alice/src/project", "abc123def456")
-                .unwrap()
-                .expect("parent session");
-
-        assert_eq!(session.project_root, "/home/ubuntu/src/project");
     }
 
     #[test]
@@ -3823,7 +3577,6 @@ mod tests {
             wayland_socket: None,
             machine_id_path: None,
             proc_privacy_state: None,
-            anonymize_file_paths: Vec::new(),
             flatpak_portal_state: None,
             broker_session_record_path: registration.broker_session_record_path,
             broker_listener: None,
@@ -3876,7 +3629,6 @@ mod tests {
             wayland_socket: None,
             machine_id_path: None,
             proc_privacy_state: None,
-            anonymize_file_paths: Vec::new(),
             flatpak_portal_state: None,
             broker_session_record_path: registration.broker_session_record_path,
             broker_listener: None,
@@ -3931,7 +3683,6 @@ mod tests {
                 wayland_socket: None,
                 machine_id_path: None,
                 proc_privacy_state: None,
-                anonymize_file_paths: Vec::new(),
                 flatpak_portal_state: None,
                 broker_session_record_path: registration.broker_session_record_path,
                 broker_listener: None,
@@ -4304,222 +4055,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_child_broker_profile_accepts_mixed_parent_child_path_views_when_dir_hash_matches() {
-        let _guard = env_lock_guard();
-        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
-        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
-        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-        let mut session = broker_session_fixture();
-        session.project_root = "/home/ubuntu/src/project".to_string();
-        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
-        let trusted_record = temp_test_dir("child-broker-mixed-view").join("session.json");
-        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
-        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
-        let capability = broker::BrokerParentCapability {
-            token: session.token.clone(),
-        };
-        std::env::set_var(
-            BROKER_PARENT_CAPABILITY_ENV,
-            serde_json::to_string(&capability).unwrap(),
-        );
-        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
-
-        assert!(
-            child_broker_args_with_store_dir(
-                "worker",
-                None,
-                "/home/alice/src/project",
-                "/home/ubuntu/src/project",
-                "/run/user/1000-child",
-                Some(trusted_record.as_path()),
-                Some("/home/ubuntu/src/project")
-            )
-            .unwrap()
-            .is_some()
-        );
-
-        if let Some(value) = original_capability {
-            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
-        }
-        if let Some(value) = original_profile {
-            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
-        }
-        if let Some(value) = original_runtime_dir {
-            std::env::set_var("XDG_RUNTIME_DIR", value);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
-        }
-
-        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
-    }
-
-    #[test]
-    fn apply_child_broker_profile_rejects_unrelated_requested_root_when_views_differ() {
-        let _guard = env_lock_guard();
-        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
-        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
-        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-        let mut session = broker_session_fixture();
-        session.project_root = "/home/ubuntu/src/project".to_string();
-        session.dir_hash = "abc123def456".to_string();
-        let trusted_record = temp_test_dir("child-broker-unrelated-root").join("session.json");
-        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
-        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
-        let capability = broker::BrokerParentCapability {
-            token: session.token.clone(),
-        };
-        std::env::set_var(
-            BROKER_PARENT_CAPABILITY_ENV,
-            serde_json::to_string(&capability).unwrap(),
-        );
-        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
-
-        let err = child_broker_args_with_store_dir(
-            "worker",
-            None,
-            "/tmp/other-project",
-            "/home/ubuntu/src/project",
-            "/run/user/1000-child",
-            Some(trusted_record.as_path()),
-            Some("/home/ubuntu/src/project"),
-        )
-        .unwrap_err();
-        assert!(err.contains("broker project identity does not match"));
-
-        if let Some(value) = original_capability {
-            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
-        }
-        if let Some(value) = original_profile {
-            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
-        }
-        if let Some(value) = original_runtime_dir {
-            std::env::set_var("XDG_RUNTIME_DIR", value);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
-        }
-
-        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
-    }
-
-    #[test]
-    fn apply_child_broker_profile_rejects_requested_root_when_session_dir_hash_targets_other_view()
-    {
-        let _guard = env_lock_guard();
-        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
-        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
-        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-        let mut session = broker_session_fixture();
-        session.project_root = "/home/ubuntu/src/project".to_string();
-        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
-        let trusted_record = temp_test_dir("child-broker-hash-mismatch").join("session.json");
-        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
-        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
-        let capability = broker::BrokerParentCapability {
-            token: session.token.clone(),
-        };
-        std::env::set_var(
-            BROKER_PARENT_CAPABILITY_ENV,
-            serde_json::to_string(&capability).unwrap(),
-        );
-        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
-
-        let err = child_broker_args_with_store_dir(
-            "worker",
-            None,
-            "/tmp/unrelated-project",
-            "/home/ubuntu/src/project",
-            "/run/user/1000-child",
-            Some(trusted_record.as_path()),
-            Some("/home/ubuntu/src/project"),
-        )
-        .unwrap_err();
-        assert!(err.contains("broker project identity does not match"));
-
-        if let Some(value) = original_capability {
-            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
-        }
-        if let Some(value) = original_profile {
-            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
-        }
-        if let Some(value) = original_runtime_dir {
-            std::env::set_var("XDG_RUNTIME_DIR", value);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
-        }
-
-        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
-    }
-
-    #[test]
-    fn apply_child_broker_profile_rejects_mixed_views_when_requested_root_hash_differs() {
-        let _guard = env_lock_guard();
-        let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
-        let original_profile = std::env::var_os(BROKER_CHILD_PROFILE_ENV);
-        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-        let mut session = broker_session_fixture();
-        session.project_root = "/home/ubuntu/src/project".to_string();
-        session.dir_hash = runtime::compute_dir_hash("/home/alice/src/project");
-        let trusted_record =
-            temp_test_dir("child-broker-capability-path-match").join("session.json");
-        std::fs::create_dir_all(trusted_record.parent().unwrap()).unwrap();
-        std::fs::write(&trusted_record, serde_json::to_vec(&session).unwrap()).unwrap();
-        let capability = broker::BrokerParentCapability {
-            token: session.token.clone(),
-        };
-        std::env::set_var(
-            BROKER_PARENT_CAPABILITY_ENV,
-            serde_json::to_string(&capability).unwrap(),
-        );
-        std::env::set_var(BROKER_CHILD_PROFILE_ENV, "overlay");
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000-child");
-
-        let err = child_broker_args_with_store_dir(
-            "worker",
-            None,
-            "/home/alice/src/other-project",
-            "/home/ubuntu/src/project",
-            "/run/user/1000-child",
-            Some(trusted_record.as_path()),
-            Some("/home/ubuntu/src/project"),
-        )
-        .unwrap_err();
-        assert!(err.contains("broker project identity does not match"));
-
-        if let Some(value) = original_capability {
-            std::env::set_var(BROKER_PARENT_CAPABILITY_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_PARENT_CAPABILITY_ENV);
-        }
-        if let Some(value) = original_profile {
-            std::env::set_var(BROKER_CHILD_PROFILE_ENV, value);
-        } else {
-            std::env::remove_var(BROKER_CHILD_PROFILE_ENV);
-        }
-        if let Some(value) = original_runtime_dir {
-            std::env::set_var("XDG_RUNTIME_DIR", value);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
-        }
-
-        let _ = std::fs::remove_dir_all(trusted_record.parent().unwrap());
-    }
-
-    #[test]
     fn apply_child_broker_profile_accepts_exact_project_root_match_without_env_identity_fields() {
         let _guard = env_lock_guard();
         let original_capability = std::env::var_os(BROKER_PARENT_CAPABILITY_ENV);
@@ -4842,90 +4377,9 @@ mod tests {
     }
 
     #[test]
-    fn pulse_proxy_identity_uses_sandbox_home_leaf() {
-        let mut config = config_with_flags(false, false, None, None, false);
-        config.anonymize = true;
-        config.sandbox_home = "/home/ubuntu".to_string();
-
-        assert_eq!(pulse_proxy_identity(&config).unwrap(), "ubuntu");
-    }
-
-    #[test]
-    fn pulse_proxy_identity_rejects_missing_leaf() {
-        let mut config = config_with_flags(false, false, None, None, false);
-        config.anonymize = true;
-        config.sandbox_home = "/home/".to_string();
-
-        let err = pulse_proxy_identity(&config).unwrap_err();
-        assert!(err.contains("sandbox_home must end with a username"));
-    }
-
-    #[test]
     fn parse_proc_children_handles_multiple_pids() {
         assert_eq!(parse_proc_children("4724 4725\n"), vec![4724, 4725]);
         assert_eq!(parse_proc_children("\n"), Vec::<u32>::new());
-    }
-
-    #[test]
-    fn pulse_proxy_command_sets_anonymous_identity() {
-        let mut config = config_with_flags(false, false, None, None, false);
-        config.anonymize = true;
-        config.bwrap_path = "/nix/store/xxx-bubblewrap-subset-pid/bin/bwrap".to_string();
-        config.sandbox_home = "/home/ubuntu".to_string();
-        let cmd = build_pulse_only_proxy_command(
-            &config,
-            PulseProxyCommand {
-                runtime_dir: "/run/user/1000/cloister/pulse/test-1",
-                pipewire_remote: "/run/user/1000/cloister/pipewire/test",
-                identity: "ubuntu",
-                passwd_path: Some("/tmp/passwd"),
-                group_path: Some("/tmp/group"),
-                pipewire_pulse_bin: "/nix/store/xxx-pipewire/bin/pipewire-pulse",
-                pipewire_pulse_conf: "/nix/store/xxx-pulse.conf",
-            },
-        )
-        .unwrap();
-
-        let argv: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(
-            cmd.get_program().to_string_lossy(),
-            "/nix/store/xxx-bubblewrap-subset-pid/bin/bwrap"
-        );
-        assert!(argv.windows(2).any(|w| w == ["--hostname", "ubuntu"]));
-        assert!(argv.windows(2).any(|w| w == ["--proc", "/proc"]));
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--ro-bind", "/tmp/passwd", "/etc/passwd"])
-        );
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--ro-bind", "/tmp/group", "/etc/group"])
-        );
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--setenv", "HOME", "/home/ubuntu"])
-        );
-        assert!(argv.windows(3).any(|w| w == ["--setenv", "USER", "ubuntu"]));
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--setenv", "LOGNAME", "ubuntu"])
-        );
-        assert!(argv.windows(2).any(|w| w == ["--dir", "/nix"]));
-        assert!(argv.windows(2).any(|w| w == ["--dir", "/nix/store"]));
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--ro-bind", "/nix/store", "/nix/store"])
-        );
-        assert!(argv.windows(3).any(|w| w
-            == [
-                "--setenv",
-                "PIPEWIRE_REMOTE",
-                "/run/user/1000/cloister/pipewire/test"
-            ]));
     }
 
     #[test]
@@ -5059,31 +4513,6 @@ mod tests {
         assert!(err.contains("invalid JSON"));
 
         let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn pulse_proxy_command_rejects_missing_image_store_mount_path() {
-        let mut config = config_with_flags(false, false, None, None, false);
-        config.store_mode = StoreMode::ImageStore;
-        config.store_id = Some("abc123".to_string());
-        config.store_image_path = Some("/var/lib/cloister/images/abc123.squashfs".to_string());
-        config.store_mount_path = None;
-
-        let err = build_pulse_only_proxy_command(
-            &config,
-            PulseProxyCommand {
-                runtime_dir: "/run/user/1000/cloister/pulse/test-1",
-                pipewire_remote: "/run/user/1000/cloister/pipewire/test",
-                identity: "ubuntu",
-                passwd_path: None,
-                group_path: None,
-                pipewire_pulse_bin: "/nix/store/xxx-pipewire/bin/pipewire-pulse",
-                pipewire_pulse_conf: "/nix/store/xxx-pulse.conf",
-            },
-        )
-        .unwrap_err();
-
-        assert!(err.contains("missing store_mount_path"));
     }
 
     #[test]
@@ -5447,7 +4876,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "store_mode": "host",
             "store_roots": ["/nix/store/aaa-shell"],
             "per_dir": {},

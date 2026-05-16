@@ -5,7 +5,6 @@
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -54,7 +53,7 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub git_enable: bool,
     #[serde(default)]
-    pub anonymize: bool,
+    pub subset_pid: bool,
     #[serde(default = "default_true")]
     pub shell_host_config: bool,
     #[serde(default = "default_true")]
@@ -78,7 +77,6 @@ pub struct SandboxConfig {
 
     /// Paths
     pub home_directory: String,
-    pub sandbox_home: String,
     #[serde(default)]
     pub seccomp_filter_path: Option<String>,
     #[serde(default)]
@@ -275,15 +273,6 @@ impl SandboxConfig {
         if self.home_directory.is_empty() {
             return Err("home_directory must not be empty".into());
         }
-        if self.sandbox_home.is_empty() {
-            return Err("sandbox_home must not be empty".into());
-        }
-        if self.anonymize && self.anonymized_identity().is_none() {
-            return Err(
-                "sandbox_home must end with a non-empty final path component when anonymize is enabled"
-                    .into(),
-            );
-        }
         let portal_desktop_enabled = self.flatpak_app_id.is_some();
         if self.dbus_enable
             && self
@@ -329,30 +318,13 @@ impl SandboxConfig {
         Ok(())
     }
 
-    /// Return the configured anonymized identity when anonymization is enabled.
-    pub fn anonymized_identity(&self) -> Option<&str> {
-        if !self.anonymize {
-            return None;
-        }
-
-        let path = Path::new(&self.sandbox_home);
-        let parent = path.parent()?;
-        if parent != Path::new("/home") {
-            return None;
-        }
-
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-    }
-
     /// Whether SSH filtering (not just passthrough) is enabled.
     pub fn ssh_filter_enabled(&self) -> bool {
         self.ssh_enable && !self.ssh_allow_fingerprints.is_empty()
     }
 
     /// Resolve runtime variables in a path string.
-    /// Substitutes $HOME, $SANDBOX_HOME, $SANDBOX_DIR, $SANDBOX_DEST, $DIR_HASH,
+    /// Substitutes $HOME, $SANDBOX_DIR, $SANDBOX_DEST, $DIR_HASH,
     /// $XDG_RUNTIME_DIR.
     pub fn resolve_path(&self, template: &str, vars: &HashMap<String, String>) -> String {
         crate::vars::expand_vars(template, vars)
@@ -372,7 +344,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "per_dir": {},
             "copy_file_base": "/home/user/.local/state/cloister",
             "git_path": "/nix/store/xxx-git/bin/git",
@@ -421,8 +392,7 @@ mod tests {
             "pipewire_pulse_binary_path": "/nix/store/xxx-pipewire/bin/pipewire-pulse",
             "pipewire_pulse_config_path": "/nix/store/xxx-pulse.conf",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/ubuntu",
-            "anonymize": true,
+            "subset_pid": true,
             "store_mode": "image-store",
             "store_roots": [
                 "/nix/store/xxx-hello"
@@ -465,7 +435,7 @@ mod tests {
         assert_eq!(config.ssh_allow_fingerprints.len(), 2);
         assert_eq!(config.ssh_filter_timeout_seconds, 30);
         assert!(!config.shell_host_config);
-        assert!(config.anonymize);
+        assert!(config.subset_pid);
         assert_eq!(
             config.dbus_proxy_path.as_deref(),
             Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cloister-dbus-proxy-dev")
@@ -494,7 +464,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "per_dir": {},
             "copy_file_base": "/state/cloister",
             "git_path": "/nix/store/xxx/bin/git",
@@ -562,7 +531,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "bind_working_directory": false,
             "per_dir": {},
             "copy_file_base": "/state/cloister",
@@ -595,7 +563,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "store_mode": "image-store",
             "per_dir": {},
             "copy_file_base": "/state",
@@ -651,7 +618,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "",
-            "sandbox_home": "/home/user",
             "per_dir": {},
             "copy_file_base": "/state",
             "git_path": "/nix/store/xxx/bin/git",
@@ -661,28 +627,6 @@ mod tests {
         let result = config.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("home_directory"));
-    }
-
-    #[test]
-    fn validate_rejects_empty_sandbox_home() {
-        let json = serde_json::json!({
-            "name": "test",
-            "bwrap_path": "/nix/store/xxx/bin/bwrap",
-            "shell_bin": "/nix/store/xxx/bin/zsh",
-            "shell_interactive_args": ["-i"],
-            "wrapped_command_shell_args": ["-i"],
-            "shell_name": "zsh",
-            "home_directory": "/home/user",
-            "sandbox_home": "",
-            "per_dir": {},
-            "copy_file_base": "/state",
-            "git_path": "/nix/store/xxx/bin/git",
-        })
-        .to_string();
-        let config: SandboxConfig = serde_json::from_str(&json).unwrap();
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("sandbox_home"));
     }
 
     #[test]
@@ -702,7 +646,6 @@ mod tests {
             "wrapped_command_shell_args": ["-i"],
             "shell_name": "zsh",
             "home_directory": "/home/user",
-            "sandbox_home": "/home/user",
             "per_dir": {},
             "copy_file_base": "/state",
             "git_path": "/nix/store/xxx/bin/git",
@@ -717,56 +660,6 @@ mod tests {
             result
                 .unwrap_err()
                 .contains("portal integration requires dbus_enable")
-        );
-    }
-
-    #[test]
-    fn anonymized_identity_uses_sandbox_home_leaf() {
-        let json = serde_json::json!({
-            "name": "test",
-            "bwrap_path": "/nix/store/xxx/bin/bwrap",
-            "shell_bin": "/nix/store/xxx/bin/zsh",
-            "shell_interactive_args": ["-i"],
-            "wrapped_command_shell_args": ["-i"],
-            "shell_name": "zsh",
-            "home_directory": "/home/user",
-            "sandbox_home": "/home/devuser",
-            "anonymize": true,
-            "per_dir": {},
-            "copy_file_base": "/state",
-            "git_path": "/nix/store/xxx/bin/git",
-        })
-        .to_string();
-        let config: SandboxConfig = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(config.anonymized_identity(), Some("devuser"));
-    }
-
-    #[test]
-    fn validate_rejects_anonymize_with_invalid_sandbox_home_leaf() {
-        let json = serde_json::json!({
-            "name": "test",
-            "bwrap_path": "/nix/store/xxx/bin/bwrap",
-            "shell_bin": "/nix/store/xxx/bin/zsh",
-            "shell_interactive_args": ["-i"],
-            "wrapped_command_shell_args": ["-i"],
-            "shell_name": "zsh",
-            "home_directory": "/home/user",
-            "sandbox_home": "/home/",
-            "anonymize": true,
-            "per_dir": {},
-            "copy_file_base": "/state",
-            "git_path": "/nix/store/xxx/bin/git",
-        })
-        .to_string();
-        let config: SandboxConfig = serde_json::from_str(&json).unwrap();
-
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("sandbox_home must end with a non-empty final path component")
         );
     }
 

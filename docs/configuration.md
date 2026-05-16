@@ -224,7 +224,7 @@ cloister.sandboxes.dev.sandbox = {
 };
 ```
 
-`copies.*.dest` is sandbox-side and must resolve under the sandbox home. It may be written as `$HOME/<path>` or as `${config.home.homeDirectory}/<path>`; Cloister normalizes the latter to `$HOME/<path>` internally so anonymized sandboxes can remap it to `/home/<username>`.
+`copies.*.dest` is sandbox-side and must resolve under the sandbox home. It may be written as `$HOME/<path>` or as `${config.home.homeDirectory}/<path>`; Cloister normalizes the latter to `$HOME/<path>` internally.
 
 ### Common Nix replacements for host paths:
 
@@ -721,9 +721,9 @@ cloister.sandboxes.evince = {
 
 Now `cl-evince` launches evince directly instead of opening a shell. Additional arguments are appended to the default command, so `cl-evince document.pdf` runs `evince document.pdf`. To run a different command explicitly, use `-c`: `cl-evince -c some-other-command`. To run a command through the interactive shell startup path first, use `-i`: `cl-evince -i some-other-command`. When `direnv` is present in the sandbox, that path also uses `direnv exec "$PWD" ...` before the final `exec`, which makes one-shot launches pick up the active repo environment. Bare `-c` and bare `-i` are invalid and exit with a usage error. To pass values like `--version`, `--build-info`, `-c`, or `-i` through to the sandboxed default command instead of the launcher, insert `--` first: `cl-evince -- --version`. Generated wrapped command aliases also pass their leading arguments through to the app now, so sandbox control flags like `--shell` should be used on `cl-<name>` itself. This is especially useful with `gui.desktopEntry`, because the desktop entry launches `cl-<name>` and relies on `defaultCommand` to start the application.
 
-## Identity anonymization
+## Proc subset-pid
 
-See `docs/anonymize.md` for anonymized identity behavior, proc privacy details, audio constraints, and limitations.
+`sandbox."subset-pid"` defaults to `true`. When enabled, Cloister uses its patched `bubblewrap-subset-pid` package so `/proc` is mounted with `subset=pid`, and it replaces common task-related mount metadata aliases with synthetic regular files. Set `sandbox."subset-pid" = false;` to use stock bubblewrap.
 
 # Options reference
 
@@ -787,8 +787,7 @@ See the sections above for usage examples and explanations.
 | `sandbox.copyBase` | str | `${config.xdg.stateHome}/cloister` | Host base directory where `sandbox.copies` writable state is stored |
 | `sandbox.copies` | list of {src, dest, mode, overwrite} | `[]` | Files to copy writable into sandbox state; `src` is a literal absolute host path and `dest` resolves under `$HOME` |
 | `sandbox.symlinks` | list of {target, link} | `[]` | Symlinks to create inside the sandbox; relative `link` paths resolve under `$HOME` |
-| `sandbox.anonymize.enable` | bool | `false` | Present generic identity (username/hostname `ubuntu`, synthetic `/proc` files, blocked `/proc/sys`) |
-| `sandbox.anonymize.username` | str | `"ubuntu"` | Username and home directory name used by anonymized sandboxes |
+| `sandbox."subset-pid"` | bool | `true` | Use patched bubblewrap to mount procfs with `subset=pid` |
 | `gui.enable` | bool | `false` | Enable Wayland GUI integration with security-context forwarding, GPU rendering support, and private `/dev/shm` |
 | `gui.fonts` | list of package | `[]`\* | Font packages for fontconfig (*`noto-fonts` and `noto-fonts-color-emoji` added when GUI enabled) |
 | `gui.packages` | list of package | `[]`* | GUI asset/plugin packages for `XDG_DATA_DIRS` and `QT_PLUGIN_PATH` (\*Adwaita defaults added when GUI enabled) |

@@ -21,10 +21,6 @@ let
           PROMPT_VAR = "$" + "{PS1@P}";
         };
         sandbox = {
-          anonymize = {
-            enable = true;
-            username = "guest";
-          };
           readOnly = [
             {
               src = ".gitconfig";
@@ -57,6 +53,13 @@ let
     cloister = {
       enable = true;
       sandboxes.plain = { };
+    };
+  };
+
+  subsetPidDisabledEval = hm {
+    cloister = {
+      enable = true;
+      sandboxes.plain.sandbox."subset-pid" = false;
     };
   };
 
@@ -226,6 +229,7 @@ let
 
   sandboxConfig = eval.config.cloister._internal.sandboxConfigs.dev;
   plainConfig = plainEval.config.cloister._internal.sandboxConfigs.plain;
+  subsetPidDisabledConfig = subsetPidDisabledEval.config.cloister._internal.sandboxConfigs.plain;
   hostConfigOn = hostConfigOnEval.config.cloister._internal.sandboxConfigs.dev;
   localeOverride = localeOverrideEval.config.cloister._internal.sandboxConfigs.dev;
   workdirDisabled = workdirDisabledEval.config.cloister._internal.sandboxConfigs.dev;
@@ -261,18 +265,6 @@ let
 in
 checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectEq "sandbox name propagates into config" "dev" sandboxConfig.name)
-  (checks.expectEq "anonymized sandbox home" "/home/guest" sandboxConfig.sandbox_home)
-  (checks.expectContains "anonymized locale defaults to C.UTF-8" ''"LANG","C.UTF-8"''
-    sandboxConfigJson
-  )
-  (checks.expectContains "anonymized lc_all defaults to C.UTF-8" ''"LC_ALL","C.UTF-8"''
-    sandboxConfigJson
-  )
-  (checks.expectContains "anonymized timezone defaults to UTC" ''"TZ","UTC"'' sandboxConfigJson)
-  (checks.expectNotContains "anonymized sandbox does not passthrough host locale vars"
-    ''"passthrough_env":["LANG"''
-    sandboxConfigJson
-  )
   (checks.expectEq "default command renders in config" [
     "nvim"
     "--clean"
@@ -283,12 +275,14 @@ checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectContains "literal prompt env value is preserved" (
     "\"$" + "{PS1@P}\""
   ) sandboxConfigJson)
-  (checks.expectContains "anonymized sandbox uses patched bubblewrap" "bubblewrap-subset-pid"
-    sandboxConfig.bwrap_path
-  )
-  (checks.expectNotContains "non-anonymized sandbox uses regular bubblewrap" "bubblewrap-subset-pid"
+  (checks.expectContains "subset-pid defaults to patched bubblewrap" "bubblewrap-subset-pid"
     plainConfig.bwrap_path
   )
+  (checks.expectEq "subset-pid flag defaults true" true plainConfig.subset_pid)
+  (checks.expectNotContains "subset-pid can use regular bubblewrap" "bubblewrap-subset-pid"
+    subsetPidDisabledConfig.bwrap_path
+  )
+  (checks.expectEq "subset-pid flag can be disabled" false subsetPidDisabledConfig.subset_pid)
   (checks.expectEq "network namespace helper path" "/run/wrappers/bin/cloister-netns"
     sandboxConfig.netns_helper_path
   )
@@ -338,11 +332,10 @@ checks.mkCheck "test-cloister-rendered-config" [
   (checks.expectContains "netns resolv.conf bind renders" "/etc/netns/vpn/resolv.conf" (
     builtins.toJSON sandboxConfig.static_bwrap_args
   ))
-  (checks.expectContains "anonymized sandbox keeps netns hosts source available"
-    "/etc/netns/vpn/hosts"
-    (builtins.toJSON sandboxConfig.static_bwrap_args)
-  )
-  (checks.expectContains "anonymized sandbox uses utc localtime" "/share/zoneinfo/UTC" (
+  (checks.expectContains "network namespace hosts source available" "/etc/netns/vpn/hosts" (
+    builtins.toJSON sandboxConfig.static_bwrap_args
+  ))
+  (checks.expectContains "sandbox uses host localtime" "/etc/localtime" (
     builtins.toJSON sandboxConfig.static_bwrap_args
   ))
   (checks.expectEq "ssh integration toggle renders" true featuresConfig.ssh_enable)

@@ -705,29 +705,14 @@ let
             };
           };
 
-          anonymize = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = ''
-                Present a generic identity inside the sandbox. When enabled:
-                - Username and hostname become the configured username (default "ubuntu")
-                - Home directory becomes /home/<username>
-                - Synthetic /etc/passwd and /etc/group replace the host files
-                - task-unrelated top-level /proc entries are hidden via procfs subset=pid
-                - Selected task-related /proc files are replaced with synthetic regular files
-              '';
-            };
-            username = lib.mkOption {
-              type = lib.types.strMatching "^[a-z_][a-z0-9_-]*$";
-              default = "ubuntu";
-              description = ''
-                Username presented inside the anonymized sandbox.
-                Also determines the sandbox home directory (/home/<username>).
-                Must start with a lowercase letter or underscore and then contain
-                only lowercase letters, digits, underscores, or dashes.
-              '';
-            };
+          "subset-pid" = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              Mount procfs with subset=pid via Cloister's patched bubblewrap and
+              replace selected task-related /proc mount metadata files with
+              synthetic regular files.
+            '';
           };
 
         };
@@ -1247,46 +1232,26 @@ let
 
           sandbox = {
             env = lib.mkMerge [
-              (lib.mapAttrs (_: lib.mkDefault) (
-                {
-                  HOME =
-                    if config.sandbox.anonymize.enable then
-                      "/home/${config.sandbox.anonymize.username}"
-                    else
-                      args.config.home.homeDirectory;
-                  USER =
-                    if config.sandbox.anonymize.enable then
-                      config.sandbox.anonymize.username
-                    else
-                      args.config.home.username;
-                  SHELL = shellLib.shellEnv;
-                  TERM = "xterm-256color";
-                  CLOISTER = name;
-                  LOCALE_ARCHIVE = "${pkgs.glibcLocales}/lib/locale/locale-archive";
-                }
-                // lib.optionalAttrs config.sandbox.anonymize.enable {
-                  LANG = "C.UTF-8";
-                  LC_ALL = "C.UTF-8";
-                  TZ = "UTC";
-                }
-              ))
+              (lib.mapAttrs (_: lib.mkDefault) {
+                HOME = args.config.home.homeDirectory;
+                USER = args.config.home.username;
+                SHELL = shellLib.shellEnv;
+                TERM = "xterm-256color";
+                CLOISTER = name;
+                LOCALE_ARCHIVE = "${pkgs.glibcLocales}/lib/locale/locale-archive";
+              })
             ];
 
-            passthroughEnv = lib.mkDefault (
-              if config.sandbox.anonymize.enable then
-                [ ]
-              else
-                [
-                  "LANG"
-                  "LC_ALL"
-                  "LC_CTYPE"
-                  "LC_MESSAGES"
-                  "LC_NUMERIC"
-                  "LC_TIME"
-                  "LC_COLLATE"
-                  "LC_MONETARY"
-                ]
-            );
+            passthroughEnv = lib.mkDefault [
+              "LANG"
+              "LC_ALL"
+              "LC_CTYPE"
+              "LC_MESSAGES"
+              "LC_NUMERIC"
+              "LC_TIME"
+              "LC_COLLATE"
+              "LC_MONETARY"
+            ];
           };
 
           gui = {
