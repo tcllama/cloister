@@ -755,6 +755,7 @@ See the sections above for usage examples and explanations.
 | `extraPackages` | list of package | `[]` | Additional packages appended to the internally managed base PATH |
 | `homeManager.enable` | bool | `false` | Evaluate a sandbox-local Home Manager profile and consume only files/packages |
 | `homeManager.modules` | list of module | `[]` | Home Manager modules evaluated for this sandbox when `cloister.homeManager.builder` is set |
+| `homeManager.extraSpecialArgs` | attrs | `{}` | Extra `specialArgs` passed to the nested Home Manager evaluation |
 | `homeManager.config` | nullOr attrs | `null` | Pre-evaluated Home Manager config to consume instead of `homeManager.modules` |
 | `homeManager.includeFiles` | bool | `true` | Bind `xdg.configFile` and `home.file` entries from the sandbox profile |
 | `homeManager.includePackages` | bool | `true` | Add `home.packages` from the sandbox profile to the sandbox PATH |
